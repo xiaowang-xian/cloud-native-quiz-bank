@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>加载中…</title>
+</head>
+<body style="background:#0b0f14;color:#c9d1d9;font-family:ui-monospace,Consolas,monospace;padding:48px 20px;text-align:center">
+<div id="t" style="font-size:14px;line-height:1.8">正在加载题库（11 个分块）…</div>
+<script src="_chunks/chunk_01.js"></script>
+<script src="_chunks/chunk_02.js"></script>
+<script src="_chunks/chunk_03.js"></script>
+<script src="_chunks/chunk_04.js"></script>
+<script src="_chunks/chunk_05.js"></script>
+<script src="_chunks/chunk_06.js"></script>
+<script src="_chunks/chunk_07.js"></script>
+<script src="_chunks/chunk_08.js"></script>
+<script src="_chunks/chunk_09.js"></script>
+<script src="_chunks/chunk_10.js"></script>
+<script src="_chunks/chunk_11.js"></script>
+<script>
+(function(){
+  try {
+    var b64 = (window.__B||[]).join('');
+    var bin = atob(b64);
+    var bytes = new Uint8Array(bin.length);
+    for (var i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
+    var ds = new DecompressionStream('gzip');
+    var stream = new Blob([bytes]).stream().pipeThrough(ds);
+    new Response(stream).text().then(function(html){
+      document.open(); document.write(html); document.close();
+    }).catch(function(e){
+      document.getElementById('t').textContent='题库解压失败: '+e;
+    });
+  } catch(e) {
+    document.getElementById('t').textContent='加载失败: '+e;
+  }
+})();
+</script>
+</body>
+</html>
