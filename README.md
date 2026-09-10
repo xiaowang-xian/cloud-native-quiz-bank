@@ -5,7 +5,7 @@
 ## 直接打开（手机 / 电脑通用）
 
 - 长期链接（跟随更新）：https://cdn.jsdelivr.net/gh/xiaowang-xian/cloud-native-quiz-bank@main/index.html
-- 固定版本链接（内容锁定）：https://cdn.jsdelivr.net/gh/xiaowang-xian/cloud-native-quiz-bank@f7eb92b4c4fd90b1e808c79b4a7344a36cabdd9f/index.html
+- 固定版本链接（内容锁定）：https://cdn.jsdelivr.net/gh/xiaowang-xian/cloud-native-quiz-bank@3e56101af5f0bd7606244f290495a4c1d6f9fb4f/index.html
 
 ## 特性
 
@@ -18,5 +18,5 @@
 
 ## 部署说明
 
-- 纯前端单页应用；题库经 gzip 压缩后分块存放于 `_chunks/`，入口 `index.html` 为 loader，浏览器端用 DecompressionStream 解压渲染。
+- 纯前端单页应用；题库经 gzip 压缩后分块存放于 `_chunks/`，入口 `index.html` 为 loader，浏览器端使用内嵌 pako 解压渲染（兼容不支持 DecompressionStream 的旧浏览器 / WebView）。
 - 本仓库作为长期托管载体，通过 jsdelivr CDN 分发，不依赖任何后端服务。
