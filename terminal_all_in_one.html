@@ -23,14 +23,17 @@ body{background:#0b0f14;color:#c9d1d9;font-family:ui-monospace,Consolas,"Courier
 #prompt{color:#3fb950;white-space:pre;flex:0 0 auto;font-size:14px}
 #cmd{flex:1;background:transparent;border:none;outline:none;color:#e6edf3;font-family:inherit;font-size:14px;caret-color:#58a6ff}
 #hint{flex:0 0 auto;color:#484f58;font-size:11px;margin-left:8px;white-space:nowrap;user-select:none}
-@media (max-width:520px){body{font-size:13px}#titlebar{font-size:11px}#hint{display:none}}
+#execbtn,#resetbtn{flex:0 0 auto;background:#161b22;border:1px solid #30363d;color:#c9d1d9;border-radius:6px;font-family:inherit;font-size:12px;padding:5px 10px;margin-left:6px;cursor:pointer;min-height:32px;-webkit-tap-highlight-color:transparent}
+#execbtn{color:#3fb950;border-color:#238636}
+#execbtn:active,#resetbtn:active{background:#21262d}
+@media (max-width:520px){body{font-size:13px}#titlebar{font-size:11px}#hint{display:none}#execbtn,#resetbtn{padding:8px 12px;font-size:13px;margin-left:4px}}
 </style>
 </head>
 <body>
 <div id="screen">
   <div id="titlebar"><span><b>云原生实战终端</b> · Linux / K8s / Docker 命令模拟</span><span id="tbtime"></span></div>
   <div id="out"></div>
-  <div id="inputbar"><span id="prompt">root@cloudlab:~#</span><input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false"><span id="hint">Tab补全 ↑↓历史 Enter执行</span></div>
+  <div id="inputbar"><span id="prompt">root@cloudlab:~#</span><input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false"><span id="hint">Tab补全 ↑↓历史 Enter执行</span><button id="execbtn" type="button">执行</button><button id="resetbtn" type="button">重置</button></div>
 </div>
 <script>
 "use strict";
@@ -2357,19 +2360,28 @@ function init(){
 /* ================= 输入处理 ================= */
 var busy=false,heredocActive=false,heredocEnd=null,heredocCmd=null,heredocBody=[],heredocStdin="";
 cmdEl.addEventListener("keydown",function(e){
-  if(e.key==="Enter"){
+  if((e.key==="Enter"||e.keyCode===13)&&!e.isComposing){
     e.preventDefault();
     if(busy)return;
     var line=cmdEl.value;
     if(heredocActive){
-      if(line.trim()===heredocEnd){
+      var tl=line.trim();
+      if(tl===heredocEnd){
         heredocActive=false;
         addLine("> "+line,"");
         renderPrompt();
         cmdEl.value="";
         heredocStdin=heredocBody.join("\n");
         heredocBody=[];
+        resetHint();
         runLine(heredocCmd);
+      }else if(tl==="exit"||tl==="quit"){
+        heredocActive=false;heredocBody=[];heredocEnd=null;heredocCmd=null;heredocStdin="";
+        addLine("> "+line,"");
+        addLine("（已退出多行输入模式）","d");
+        renderPrompt();
+        cmdEl.value="";
+        resetHint();
       }else{
         heredocBody.push(line);
         addLine("> "+line,"");
@@ -2387,6 +2399,7 @@ cmdEl.addEventListener("keydown",function(e){
       cmdEl.value="";
       heredocActive=true;heredocEnd=hdm[1];heredocCmd=line.replace(/<<\s*['"]?(\w+)['"]?/,"").replace(/\s+$/,"");heredocBody=[];
       promptEl.textContent="> ";
+      var hintEl=document.getElementById("hint");if(hintEl)hintEl.textContent="输入结束符(如 EOF)或 exit 退出";
       return;
     }
     history.push(line);
@@ -2407,11 +2420,12 @@ cmdEl.addEventListener("keydown",function(e){
   }else if(e.key==="c"&&e.ctrlKey){
     e.preventDefault();
     cmdEl.value="";
-    if(heredocActive){heredocActive=false;heredocBody=[];renderPrompt();addLine("^C","d");return}
+    if(heredocActive){heredocActive=false;heredocBody=[];renderPrompt();resetHint();addLine("^C","d");return}
     addLine("^C","d");
     renderPrompt();
   }
 });
+function resetHint(){var h=document.getElementById("hint");if(h)h.textContent="Tab补全 ↑↓历史 Enter执行"}
 async function runLine(line){
   busy=true;
   var r=await execPipeline(line);
@@ -2444,6 +2458,21 @@ function doTab(){
 }
 document.addEventListener("click",function(){cmdEl.focus()});
 init();
+/* ================= 按钮兜底（移动端软键盘/输入法 Enter 失效、heredoc 卡住时使用） ================= */
+(function(){
+  var execBtn=document.getElementById("execbtn"),resetBtn=document.getElementById("resetbtn");
+  if(execBtn)execBtn.addEventListener("click",function(){
+    if(busy)return;
+    cmdEl.focus();
+    try{
+      cmdEl.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",keyCode:13,which:13,bubbles:true,cancelable:true}));
+    }catch(e){}
+  });
+  if(resetBtn)resetBtn.addEventListener("click",function(){
+    try{localStorage.removeItem("tty_fs_v1");localStorage.removeItem("tty_k8s_v1");localStorage.removeItem("tty_dock_v1")}catch(e){}
+    location.reload();
+  });
+})();
 
 </script>
 </body>
