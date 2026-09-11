@@ -1,0 +1,2450 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>云原生实战终端</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:#0b0f14;color:#c9d1d9;font-family:ui-monospace,Consolas,"Courier New",monospace;font-size:14px;line-height:1.55;overflow:hidden}
+#screen{position:fixed;left:0;top:0;right:0;bottom:0;display:flex;flex-direction:column}
+#titlebar{flex:0 0 34px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;background:#11161d;border-bottom:1px solid #21262d;font-size:12px;color:#8b949e;user-select:none}
+#titlebar b{color:#58a6ff;font-weight:600}
+#out{flex:1;overflow-y:auto;padding:10px 12px 12px;white-space:pre-wrap;word-break:break-all}
+#out .d{color:#8b949e}
+#out .g{color:#3fb950}
+#out .y{color:#d29922}
+#out .c{color:#58a6ff}
+#out .r{color:#f85149}
+#out .m{color:#bc8cff}
+#out .b{color:#79c0ff;font-weight:600}
+#inputbar{flex:0 0 auto;display:flex;align-items:center;padding:8px 10px 10px;background:#0b0f14;border-top:1px solid #161b22}
+#prompt{color:#3fb950;white-space:pre;flex:0 0 auto;font-size:14px}
+#cmd{flex:1;background:transparent;border:none;outline:none;color:#e6edf3;font-family:inherit;font-size:14px;caret-color:#58a6ff}
+#hint{flex:0 0 auto;color:#484f58;font-size:11px;margin-left:8px;white-space:nowrap;user-select:none}
+@media (max-width:520px){body{font-size:13px}#titlebar{font-size:11px}#hint{display:none}}
+</style>
+</head>
+<body>
+<div id="screen">
+  <div id="titlebar"><span><b>云原生实战终端</b> · Linux / K8s / Docker 命令模拟</span><span id="tbtime"></span></div>
+  <div id="out"></div>
+  <div id="inputbar"><span id="prompt">root@cloudlab:~#</span><input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false"><span id="hint">Tab补全 ↑↓历史 Enter执行</span></div>
+</div>
+<script>
+"use strict";
+/* ================= 工具 ================= */
+function pad(n,l){n=String(n);while(n.length<(l||2))n="0"+n;return n}
+function nowStr(){var d=new Date();return d.getFullYear()+"-"+pad(d.getMonth()+1)+"-"+pad(d.getDate())+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())}
+function ageStr(ms){var s=Math.floor(ms/1000);if(s<60)return s+"s";var m=Math.floor(s/60);if(m<60)return m+"m";var h=Math.floor(m/60);if(h<24)return h+"h";var d=Math.floor(h/24);if(d<30)return d+"d";var mo=Math.floor(d/30);if(mo<12)return mo+"mo";return Math.floor(mo/12)+"y"}
+function esc(s){var d=document.createElement("div");d.textContent=s;return d.innerHTML}
+/* ================= 文件系统 ================= */
+var FS_KEY="tty_fs_v1", K_KEY="tty_k8s_v1", D_KEY="tty_dock_v1";
+function file(content,mode){return {t:"f",c:content||"",m:mode||"644"}}
+function dir(children){return {t:"d",ch:children||{}}}
+function defaultFS(){
+  var E="echo hello\n";
+  return dir({
+    root:dir({}),
+    home:dir({
+      student:dir({".bashrc":file("export PS1='student@cloudlab:\\w$ '\nexport PATH=$PATH:/usr/local/bin\n")}),
+      cloud:dir({"hello.txt":file("Welcome to CloudLab terminal.\nPractice Linux, Docker and Kubernetes commands here.\n"),lab:dir({})})
+    }),
+    etc:dir({
+      hostname:file("cloudlab\n"),hosts:file("127.0.0.1 localhost\n::1 localhost ip6-localhost\n10.0.0.11 cloudlab\n"),
+      passwd:file("root:x:0:0:root:/root:/bin/bash\nstudent:x:1000:1000:student:/home/student:/bin/bash\n"),
+      shadow:file("root:*:19000:0:99999:7:::\nstudent:*:19000:0:99999:7:::\n"),
+      group:file("root:x:0:\nstudent:x:1000:\ndocker:x:999:\n"),
+      "resolv.conf":file("nameserver 223.5.5.5\nnameserver 8.8.8.8\n"),
+      nginx:dir({"nginx.conf":file("user www-data;\nworker_processes auto;\n\nserver {\n    listen 80;\n    location / { root /usr/share/nginx/html; }\n}\n")}),
+      docker:dir({"daemon.json":file("{\n  \"registry-mirrors\": [\"https://docker.mirrors.ustc.edu.cn\"]\n}\n")}),
+      kubernetes:dir({"kubelet.conf":file("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n" + "clusterDNS:\n- 10.96.0.10\n")})
+    }),
+    usr:dir({
+      local:dir({bin:dir({}),src:dir({})}),
+      share:dir({nginx:dir({html:dir({"index.html":file("<h1>Welcome to nginx!</h1>\n<p>If you see this page, the nginx web server is successfully installed.\n</p>\n")})})})
+    }),
+    var:dir({
+      log:dir({nginx:dir({"access.log":file("127.0.0.1 - - [10/Sep/2026:10:00:01 +0800] \"GET / HTTP/1.1\" 200 612\n127.0.0.1 - - [10/Sep/2026:10:00:05 +0800] \"GET /index.html HTTP/1.1\" 200 612\n")})}),
+      lib:dir({docker:dir({})}),run:dir({})
+    }),
+    tmp:dir({}),opt:dir({}),mnt:dir({}),media:dir({}),srv:dir({}),dev:dir({}),proc:dir({}),sys:dir({}),data:dir({})
+  });
+}
+function getNode(fs,path){
+  var parts=path.split("/").filter(Boolean);var n=fs;
+  for(var i=0;i<parts.length;i++){if(!n||n.t!=="d")return null;if(n.ch[parts[i]]===undefined)return null;n=n.ch[parts[i]]}
+  return n;
+}
+function resolvePath(cwd,p){
+  if(p==="~")return env.HOME||"/root";
+  if(p.indexOf("~")===0&&p.length>1)return "/home/"+p.slice(1);
+  if(p[0]!=="/")p=cwd+"/"+p;
+  var parts=[],raw=p.split("/");
+  for(var i=0;i<raw.length;i++){var s=raw[i];if(!s||s===".")continue;if(s===".."){if(parts.length)parts.pop()}else parts.push(s)}
+  return "/"+parts.join("/");
+}
+function parentOf(p){var i=p.lastIndexOf("/");return i<=0?"/":p.slice(0,i)}
+function baseOf(p){var i=p.lastIndexOf("/");return i<0?p:p.slice(i+1)}
+function mkdirP(fs,cwd,p){var rp=resolvePath(cwd,p);var parts=rp.split("/").filter(Boolean);var n=fs;for(var i=0;i<parts.length;i++){if(!n.ch[parts[i]])n.ch[parts[i]]=dir({});n=n.ch[parts[i]]}return rp}
+function readFile(fs,cwd,p){var n=getNode(fs,resolvePath(cwd,p));if(!n)return null;if(n.t==="d")return null;return n.c}
+function writeFile(fs,cwd,p,content){var rp=resolvePath(cwd,p);var par=parentOf(rp);var pn=getNode(fs,par);if(!pn||pn.t!=="d")return false;pn.ch[baseOf(rp)]=file(content);return true}
+function appendFile(fs,cwd,p,content){var rp=resolvePath(cwd,p);var old=readFile(fs,cwd,p);return writeFile(fs,cwd,p,(old||"")+content)}
+function lsDir(fs,cwd,p){var n=getNode(fs,resolvePath(cwd,p));if(!n)return null;if(n.t!=="d")return null;return n.ch}
+/* ================= 状态 ================= */
+var FS=defaultFS(),cwd="/root",env={HOME:"/root",USER:"root",PATH:"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",SHELL:"/bin/bash",PS1:"\\w"},aliases={},history=[],histIdx=-1,uid=0,username="root",hostname="cloudlab";
+function loadState(){try{var f=localStorage.getItem(FS_KEY);if(f){var o=JSON.parse(f);if(o&&o.t==="d")FS=o}}catch(e){}}
+function saveFS(){try{localStorage.setItem(FS_KEY,JSON.stringify(FS))}catch(e){}}
+function fmtMode(n){
+  var m=n.m||"644";var bits=parseInt(m,8);var map="rwxrwxrwx",s="";
+  for(var i=0;i<9;i++)s+=(bits&(1<<(8-i)))?"rwx"[i%3]:"-";
+  return (n.t==="d"?"d":"-")+s;
+}
+function fmtLs(n,name,long){
+  if(long){
+    var size=(n.t==="d")?4096:(n.c?n.c.length:0);
+    return fmtMode(n)+" 1 root root "+pad(size,6)+" Sep 10 10:00 "+name;
+  }
+  return name;
+}
+/* ================= 解析引擎 ================= */
+function tokenize(s){
+  var toks=[],cur="",q=null,has=false,squote=false;
+  for(var i=0;i<s.length;i++){
+    var ch=s[i];
+    if(q){
+      if(ch===q){q=null;if(ch==="'")squote=true}
+      else if(ch==="\\"&&q==='"'){i++;if(i<s.length)cur+=s[i]}
+      else cur+=ch;
+      continue;
+    }
+    if(ch==="'"||ch==='"'){q=ch;has=true}
+    else if(ch==="\\"){i++;if(i<s.length)cur+=s[i]}
+    else if(ch===" "||ch==="\t"){if(has||cur){toks.push((squote?"\u0001":"")+cur);cur="";has=false;squote=false}}
+    else cur+=ch;
+  }
+  if(has||cur)toks.push((squote?"\u0001":"")+cur);
+  return toks;
+}
+function splitOuter(s,sep){
+  var out=[],cur="",q=null,depth=0;
+  for(var i=0;i<s.length;i++){
+    var ch=s[i];
+    if(q){if(ch===q)q=null;else if(ch==="\\"&&q==='"'){i++;if(i<s.length)cur+=s[i]}else cur+=ch;continue}
+    if(ch==="'"||ch==='"'){q=ch;cur+=ch}
+    else if(ch==="("){depth++;cur+=ch}
+    else if(ch===")"){depth--;cur+=ch}
+    else if(depth===0&&sep.indexOf(ch)>=0){out.push(cur);cur=""}
+    else cur+=ch;
+  }
+  out.push(cur);
+  return out;
+}
+function splitLogical(line){
+  var segs=[],cur="",op=";",q=null;
+  for(var i=0;i<line.length;i++){
+    var ch=line[i];
+    if(q){cur+=ch;if(ch===q)q=null;continue}
+    if(ch==="'"||ch==='"'){q=ch;cur+=ch;continue}
+    if(ch==="&"&&line[i+1]==="&"){segs.push({op:op,text:cur.trim()});cur="";op="&&";i++;continue}
+    if(ch==="|"&&line[i+1]==="|"){segs.push({op:op,text:cur.trim()});cur="";op="||";i++;continue}
+    if(ch===";"){segs.push({op:op,text:cur.trim()});cur="";op=";";continue}
+    cur+=ch;
+  }
+  segs.push({op:op,text:cur.trim()});
+  return segs.filter(function(x){return x.text!==""});
+}
+function splitPipe(text){
+  var out=[],cur="",q=null;
+  for(var i=0;i<text.length;i++){
+    var ch=text[i];
+    if(q){cur+=ch;if(ch===q)q=null;continue}
+    if(ch==="'"||ch==='"'){q=ch;cur+=ch;continue}
+    if(ch==="|"){out.push(cur);cur="";continue}
+    cur+=ch;
+  }
+  out.push(cur);
+  return out;
+}
+function parseStage(stage){
+  var toks=tokenize(stage),args=[],redirs={};
+  for(var i=0;i<toks.length;i++){
+    var t=toks[i];
+    if(t===">"){redirs.out=(toks[i+1]||"");i++}
+    else if(t===">>"){redirs.append=(toks[i+1]||"");i++}
+    else if(t==="2>"){redirs.err2=(toks[i+1]||"");i++}
+    else if(t==="2>>"){redirs.err2a=(toks[i+1]||"");i++}
+    else if(t==="<"){redirs.inp=(toks[i+1]||"");i++}
+    else if(t.indexOf("2>>")===0){redirs.err2a=t.slice(3)}
+    else if(t.indexOf("2>")===0){redirs.err2=t.slice(2)}
+    else if(t.indexOf(">>")===0){redirs.append=t.slice(2)}
+    else if(t.indexOf(">")===0){redirs.out=t.slice(1)}
+    else if(t.indexOf("<")===0){redirs.inp=t.slice(1)}
+    else args.push(t);
+  }
+  return {args:args,redirs:redirs};
+}
+function expandVar(s){
+  var out="",i=0;
+  while(i<s.length){
+    var ch=s[i];
+    if(ch==="$"&&i+1<s.length){
+      var j=i+1,name="";
+      if(s[j]==="{"){j++;while(j<s.length&&s[j]!=="}"){name+=s[j];j++}j++}
+      else{while(j<s.length&&/[A-Za-z0-9_]/.test(s[j])){name+=s[j];j++}}
+      if(name==="?")out+="0";
+      else out+=(env[name]!==undefined?env[name]:"");
+      i=j;continue;
+    }
+    out+=ch;i++;
+  }
+  return out;
+}
+function globExpand(arg){
+  if(arg.indexOf("*")<0&&arg.indexOf("?")<0)return [arg];
+  var abs=arg[0]==="/";
+  var parts=arg.split("/").filter(Boolean);
+  var start=abs?"":"";
+  function expandIn(dirPath,remain){
+    var out=[];
+    if(!remain.length)return out;
+    var head=remain[0],rest=remain.slice(1);
+    var ch=lsDir(FS,cwd,dirPath===""?"/":dirPath)||{};
+    var names=Object.keys(ch);
+    if(head.indexOf("*")<0&&head.indexOf("?")<0){
+      var full=dirPath+"/"+head;
+      if(rest.length===0){if(getNode(FS,full))out.push(full)}
+      else out=out.concat(expandIn(full,rest));
+      return out;
+    }
+    var re=new RegExp("^"+head.replace(/[.+^${}()|[\]\\]/g,"\\$&").replace(/\*/g,".*").replace(/\?/g,".")+"$");
+    names.forEach(function(n){
+      if(re.test(n)){
+        var full=dirPath+"/"+n;
+        if(rest.length===0)out.push(full);
+        else if((getNode(FS,full)||{}).t==="d")out=out.concat(expandIn(full,rest));
+      }
+    });
+    return out;
+  }
+  var res=expandIn(start,parts);
+  var out=[];
+  for(var k=0;k<res.length;k++)out.push(res[k].replace(/^\/\//,"/"));
+  return out.length?out:[arg];
+}
+function expandArgs(args){
+  var out=[];
+  for(var i=0;i<args.length;i++){
+    var a=args[i];
+    if(a[0]==="\u0001"){out.push(a.slice(1));continue}
+    a=expandVar(a);
+    if(a==="~")a=env.HOME||"/root";
+    var g=globExpand(a);
+    for(var j=0;j<g.length;j++)out.push(g[j]);
+  }
+  return out;
+}
+/* ================= 命令注册 ================= */
+var CMDS={};
+function reg(name,fn,desc){CMDS[name]={fn:fn,desc:desc||""}}
+/* ================= 执行器 ================= */
+var gExit=0,lastErrOut="";
+async function execPipeline(text){
+  var out=[],err=[],exit=0;
+  var segs=splitLogical(text);
+  for(var s=0;s<segs.length;s++){
+    var seg=segs[s];
+    if(seg.op==="&&"&&exit!==0)continue;
+    if(seg.op==="||"&&exit===0)continue;
+    var r=await execPipeSeg(seg.text);
+    out=out.concat(r.out);err=err.concat(r.err);exit=r.exit;
+    if(seg.op==="&&"&&exit!==0)break;
+    if(seg.op==="||"&&exit===0)break;
+  }
+  return {out:out,err:err,exit:exit};
+}
+async function execPipeSeg(text){
+  var stages=splitPipe(text);
+  var stdin=heredocStdin||"",out=[],err=[],exit=0;
+  heredocStdin="";
+  for(var i=0;i<stages.length;i++){
+    if(!stages[i].trim())continue;
+    var ps=parseStage(stages[i]);
+    if(!ps.args.length)continue;
+    var argv=expandArgs(ps.args);
+    var name=argv[0];
+    if(ps.redirs.inp!==undefined){var f=readFile(FS,cwd,expandVar(ps.redirs.inp));stdin=(f===null?"":f)}
+    var ctx={args:argv,name:name,stdin:stdin,out:[],err:[],fs:FS,cwd:cwd,env:env};
+    var fn=CMDS[name];
+    var code=127;
+    if(fn){code=await fn.fn(ctx)}
+    else{
+      var al=aliases[name];
+      if(al){var r=await execPipeline(expandVar(al)+" "+(argv.slice(1).map(quoteArg).join(" ")));out=r.out;err=r.err;exit=r.exit;stdin=out.join("\n");continue}
+      if(/^[.\/]/.test(name)){
+        var np=getNode(FS,resolvePath(cwd,name));
+        if(np&&np.t==="f"&&(/^#!/.test(np.c))){code=await runScript(np.c,argv.slice(1))}
+        else {ctx.err.push("bash: "+name+": 无法执行二进制文件或脚本");code=126}
+      }else{
+        ctx.err.push("bash: "+name+": command not found");
+      }
+    }
+    out=ctx.out;err=ctx.err;
+    if(ps.redirs.out!==undefined){writeFile(FS,cwd,expandVar(ps.redirs.out),ctx.out.join("\n")+(ctx.out.length?"\n":""));out=[];ctx.out=[]}
+    if(ps.redirs.append!==undefined){appendFile(FS,cwd,expandVar(ps.redirs.append),ctx.out.join("\n")+(ctx.out.length?"\n":""));out=[];ctx.out=[]}
+    if(ps.redirs.err2!==undefined){writeFile(FS,cwd,expandVar(ps.redirs.err2),ctx.err.join("\n")+(ctx.err.length?"\n":""));err=[];ctx.err=[]}
+    if(ps.redirs.err2a!==undefined){appendFile(FS,cwd,expandVar(ps.redirs.err2a),ctx.err.join("\n")+(ctx.err.length?"\n":""));err=[];ctx.err=[]}
+    exit=code;gExit=code;lastErrOut=ctx.err.join("\n");
+    stdin=ctx.out.join("\n");
+  }
+  return {out:out,err:err,exit:exit};
+}
+function quoteArg(s){return /[\s"'$|&;<>*?]/.test(s)?"'"+s.replace(/'/g,"'\\''")+"'":s}
+async function runScript(src,args){
+  var lines=src.split("\n").filter(function(l){return l.trim()&&l[0]!=="#"});
+  var r0={out:[],err:[],exit:0};
+  for(var i=0;i<lines.length;i++){
+    var line=lines[i];
+    for(var j=0;j<args.length;j++)line=line.split("$"+(j+1)).join(args[j]);
+    var r=await execPipeline(line);
+    r0.out=r0.out.concat(r.out);r0.err=r0.err.concat(r.err);r0.exit=r.exit;
+  }
+  return r0.exit;
+}
+function printOut(lines){lines.forEach(function(l){addLine(l,"")})}
+function printErr(lines){lines.forEach(function(l){addLine(l,"r")})}
+/* ================= UI ================= */
+var outEl=document.getElementById("out"),cmdEl=document.getElementById("cmd"),promptEl=document.getElementById("prompt");
+function promptStr(){return username+"@"+hostname+":"+shortPwd()+(uid===0?"#":"$")+" "}
+function shortPwd(){var p=cwd;if(p===env.HOME)p="~";else if(p.indexOf(env.HOME+"/")===0)p="~"+p.slice(env.HOME.length);return p}
+function addLine(text,cls){
+  var d=document.createElement("div");
+  if(cls)d.className=cls;
+  d.textContent=text;
+  outEl.appendChild(d);
+  outEl.scrollTop=outEl.scrollHeight;
+}
+function renderPrompt(){promptEl.textContent=promptStr()}
+function printBanner(){
+  var lines=[
+    "  _   _            _       _     _   ",
+    " | | | |   ___    | |     | |   | |  ",
+    " | |_| |  / _ \\   | |  /\\  | | __| |  ",
+    " |  _  | | (_) |  | | /  \\ | |/ /` |  ",
+    " |_| |_|  \\___/   |_|/__/\\_/|_\\__|_|  ",
+    "",
+    "云原生实战终端 · Linux / Docker / Kubernetes 命令模拟",
+    "输入 help 查看可用命令，输入 help k8s / help docker 查看专题。",
+    "文件系统、Docker、K8s 状态都会保存在本机浏览器。",
+    "提示：Tab 补全 · ↑↓ 历史 · 支持管道/重定向/变量/通配符/heredoc",
+    ""
+  ];
+  lines.forEach(function(l){addLine(l,"c")});
+}
+/* ================= 基础命令 ================= */
+reg("help",async function(ctx){
+  var a=ctx.args[1];
+  var groups={
+    "文件与目录":"ls cd pwd cat echo touch mkdir rm rmdir cp mv chmod chown head tail wc sort uniq cut tr grep find sed awk file stat du df tree",
+    "系统与进程":"clear history man exit whoami id uname hostname date cal uptime free ps top kill env export alias unalias which type sudo su groups sleep who",
+    "网络":"ping ifconfig ip netstat ss curl wget nslookup dig traceroute nc route host",
+    "用户管理":"useradd userdel usermod passwd groupadd",
+    "包管理":"apt apt-get yum dnf rpm",
+    "压缩与归档":"tar gzip gunzip zip unzip",
+    "服务管理":"systemctl service journalctl",
+    "Docker":"docker ps images run exec logs stop start restart rm rmi pull build network volume inspect stats",
+    "Kubernetes":"kubectl get describe apply delete logs exec scale rollout port-forward version cluster-info api-resources config explain"
+  };
+  var list=Object.keys(groups);
+  if(a==="k8s"||a==="kubernetes"){ctx.out.push("kubectl 常用命令示例：");["kubectl get nodes","kubectl get pods -n kube-system","kubectl get deployments","kubectl describe pod <name>","kubectl logs <pod>","kubectl exec -it <pod> -- bash","kubectl apply -f deploy.yaml","kubectl delete deployment nginx","kubectl scale deployment nginx --replicas=5","kubectl rollout status deployment/nginx","kubectl port-forward svc/nginx 8080:80","kubectl get all","kubectl explain deployment"].forEach(function(x){ctx.out.push("  "+x)});
+    ctx.out.push("","练习提示：先 cat > /tmp/app.yaml <<EOF 写一个 Deployment，再 kubectl apply -f /tmp/app.yaml，然后 get/describe/scale/rollout 观察变化。");
+    return 0}
+  if(a==="docker"){
+    ["docker ps -a","docker images","docker run -d --name web -p 8080:80 nginx","docker exec -it web bash","docker logs web","docker stop web","docker rm web","docker rmi nginx","docker network ls","docker volume ls","docker build -t myapp .","docker stats"].forEach(function(x){ctx.out.push("  "+x)});
+    ctx.out.push("","练习提示：镜像池内置 nginx / redis / mysql / alpine / ubuntu，可以直接 run。");
+    return 0}
+  if(a==="linux"){
+    ["ls -la /etc","cat /etc/passwd | grep student","grep -r nginx /etc","find / -name \"*.conf\" 2>/dev/null","ps aux | grep nginx","df -h && free -m","tar czf /tmp/backup.tar.gz /etc/nginx","chmod +x ./script.sh && ./script.sh","curl -I http://localhost","tail -f /var/log/nginx/access.log"].forEach(function(x){ctx.out.push("  "+x)});
+    return 0}
+  if(a){ctx.err.push("help: 没有该专题，可用: "+list.join(" / "));return 1}
+  ctx.out.push("可用命令分类（输入 help <专题> 查看示例）：");
+  list.forEach(function(g){ctx.out.push("  "+g+"   →  "+groups[g])});
+  ctx.out.push("","Shell 特性：管道 | · 重定向 > >> < 2> · 逻辑 && || ; · 变量 $VAR · 通配符 * ? · heredoc <<EOF · 别名 alias");
+  return 0;
+},"显示帮助");
+reg("clear",async function(){outEl.innerHTML="";return 0});
+reg("pwd",async function(ctx){ctx.out.push(cwd);return 0});
+reg("echo",async function(ctx){
+  var a=ctx.args.slice(1),s="";
+  for(var i=0;i<a.length;i++){s+=a[i]+" "}
+  if(ctx.args[1]==="-n"){ctx.out[ctx.out.length-1]=(ctx.out.pop()||"")+s.replace(/^ /,"");return 0}
+  ctx.out.push(s.replace(/ $/,""));
+  return 0;
+});
+reg("cat",async function(ctx){
+  if(!ctx.args[1]){ctx.out.push(ctx.stdin);return 0}
+  for(var i=1;i<ctx.args.length;i++){
+    var n=getNode(FS,resolvePath(cwd,ctx.args[i]));
+    if(!n){ctx.err.push("cat: "+ctx.args[i]+": No such file or directory");continue}
+    if(n.t==="d"){ctx.err.push("cat: "+ctx.args[i]+": Is a directory");continue}
+    ctx.out.push(n.c.replace(/\n$/,""));
+  }
+  return 0;
+});
+reg("cd",async function(ctx){
+  var target=ctx.args[1]||env.HOME;
+  target=expandVar(target);
+  var rp=resolvePath(cwd,target);
+  var n=getNode(FS,rp);
+  if(!n){ctx.err.push("bash: cd: "+ctx.args[1]+": No such file or directory");return 1}
+  if(n.t!=="d"){ctx.err.push("bash: cd: "+ctx.args[1]+": Not a directory");return 1}
+  cwd=rp;renderPrompt();return 0;
+});
+reg("ls",async function(ctx){
+  var a=ctx.args.slice(1),long=false,all=false,human=false,paths=[];
+  for(var i=0;i<a.length;i++){
+    if(a[i]==="-l")long=true;else if(a[i]==="-a")all=true;else if(a[i]==="-h")human=true;
+    else if(a[i].indexOf("-")===0&&a[i].length>1){for(var j=1;j<a[i].length;j++){if(a[i][j]==="l")long=true;if(a[i][j]==="a")all=true;if(a[i][j]==="h")human=true}}
+    else paths.push(a[i]);
+  }
+  if(!paths.length)paths=["."];
+  var multi=paths.length>1;
+  for(var p=0;p<paths.length;p++){
+    var rp=resolvePath(cwd,paths[p]);var n=getNode(FS,rp);
+    if(!n){ctx.err.push("ls: cannot access '"+paths[p]+"': No such file or directory");continue}
+    if(n.t==="d"){
+      if(multi)ctx.out.push(rp+":");
+      var names=Object.keys(n.ch).sort();
+      if(!all)names=names.filter(function(x){return x[0]!=="."});
+      if(long){names.forEach(function(x){ctx.out.push(fmtLs(n.ch[x],x,true))})}
+      else{var line="";names.forEach(function(x){line+=(line?"  ":"")+x});ctx.out.push(line)}
+    }else{
+      ctx.out.push(fmtLs(n,paths[p],long));
+    }
+    if(multi&&p<paths.length-1)ctx.out.push("");
+  }
+  return 0;
+});
+reg("touch",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++){
+    var rp=resolvePath(cwd,ctx.args[i]);
+    if(!getNode(FS,rp))writeFile(FS,cwd,ctx.args[i],"");
+  }
+  return 0;
+});
+reg("mkdir",async function(ctx){
+  var pflag=false,paths=[];
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-p")pflag=true;else paths.push(ctx.args[i])}
+  for(var p=0;p<paths.length;p++){
+    var rp=resolvePath(cwd,paths[p]);
+    if(getNode(FS,rp)){ctx.err.push("mkdir: cannot create directory '"+paths[p]+"': File exists");continue}
+    if(pflag)mkdirP(FS,cwd,paths[p]);
+    else{var par=getNode(FS,parentOf(rp));if(!par||par.t!=="d"){ctx.err.push("mkdir: cannot create directory '"+paths[p]+"': No such file or directory")}else{par.ch[baseOf(rp)]=dir({})}}
+  }
+  return 0;
+});
+reg("rmdir",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++){
+    var n=getNode(FS,resolvePath(cwd,ctx.args[i]));
+    if(!n){ctx.err.push("rmdir: failed to remove '"+ctx.args[i]+"': No such file or directory");continue}
+    if(Object.keys(n.ch).length){ctx.err.push("rmdir: failed to remove '"+ctx.args[i]+"': Directory not empty");continue}
+    delete getNode(FS,parentOf(resolvePath(cwd,ctx.args[i]))).ch[baseOf(ctx.args[i])];
+  }
+  return 0;
+});
+function rmRec(n){
+  if(n.t==="d"){var ks=Object.keys(n.ch);for(var i=0;i<ks.length;i++)rmRec(n.ch[ks[i]])}
+}
+reg("rm",async function(ctx){
+  var rf=false,rf_flag=false,paths=[];
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-rf"||ctx.args[i]==="-fr"){rf=true}if(ctx.args[i]==="-r"||ctx.args[i]==="-R")rf=true;else if(ctx.args[i]==="-f")rf_flag=true;else if(ctx.args[i][0]==="-")continue;else paths.push(ctx.args[i])}
+  for(var p=0;p<paths.length;p++){
+    var rp=resolvePath(cwd,paths[p]);var n=getNode(FS,rp);
+    if(!n){if(!rf_flag)ctx.err.push("rm: cannot remove '"+paths[p]+"': No such file or directory");continue}
+    if(n.t==="d"&&!rf){ctx.err.push("rm: cannot remove '"+paths[p]+"': Is a directory");continue}
+    var par=getNode(FS,parentOf(rp));delete par.ch[baseOf(rp)];
+  }
+  return 0;
+});
+reg("cp",async function(ctx){
+  var a=ctx.args.slice(1),rflag=false,srcs=[],dst=null;
+  for(var i=0;i<a.length;i++){if(a[i]==="-r"||a[i]==="-R")rflag=true;else if(a[i][0]==="-")continue;else srcs.push(a[i])}
+  if(srcs.length<2){ctx.err.push("cp: missing destination file operand");return 1}
+  dst=srcs.pop();
+  function copyRec(srcN,dstPath){
+    if(srcN.t==="d"){mkdirP(FS,cwd,dstPath);var ks=Object.keys(srcN.ch);for(var i=0;i<ks.length;i++)copyRec(srcN.ch[ks[i]],dstPath+"/"+ks[i])}
+    else{writeFile(FS,cwd,dstPath,srcN.c)}
+  }
+  for(var s=0;s<srcs.length;s++){
+    var sn=getNode(FS,resolvePath(cwd,srcs[s]));
+    if(!sn){ctx.err.push("cp: cannot stat '"+srcs[s]+"': No such file or directory");continue}
+    var dp=resolvePath(cwd,dst);
+    if((getNode(FS,dp)||{}).t==="d")dp=dp+"/"+baseOf(srcs[s]);
+    if(sn.t==="d"&&!rflag){ctx.err.push("cp: -r not specified; omitting directory '"+srcs[s]+"'");continue}
+    copyRec(sn,dp);
+  }
+  return 0;
+});
+reg("mv",async function(ctx){
+  var a=ctx.args.slice(1),srcs=[],dst=null;
+  for(var i=0;i<a.length;i++){if(a[i][0]==="-")continue;else srcs.push(a[i])}
+  if(srcs.length<2){ctx.err.push("mv: missing destination file operand");return 1}
+  dst=srcs.pop();
+  for(var s=0;s<srcs.length;s++){
+    var rp=resolvePath(cwd,srcs[s]);var sn=getNode(FS,rp);
+    if(!sn){ctx.err.push("mv: cannot stat '"+srcs[s]+"': No such file or directory");continue}
+    var dp=resolvePath(cwd,dst);
+    if((getNode(FS,dp)||{}).t==="d")dp=dp+"/"+baseOf(srcs[s]);
+    var par=getNode(FS,parentOf(rp));delete par.ch[baseOf(rp)];
+    if(sn.t==="d")mkdirP(FS,cwd,dp);else writeFile(FS,cwd,dp,sn.c);
+  }
+  return 0;
+});
+reg("chmod",async function(ctx){
+  var mode=ctx.args[1],targets=ctx.args.slice(2);
+  if(!mode||!targets.length){ctx.err.push("chmod: missing operand");return 1}
+  var isNum=/^[0-7]{3,4}$/.test(mode);
+  for(var i=0;i<targets.length;i++){
+    var n=getNode(FS,resolvePath(cwd,targets[i]));
+    if(!n){ctx.err.push("chmod: cannot access '"+targets[i]+"': No such file or directory");continue}
+    if(isNum)n.m=mode.slice(-3);else{n.m="755"}
+    ctx.out.push("chmod: "+targets[i]+" 权限已设置为 "+n.m);
+  }
+  return 0;
+});
+reg("chown",async function(ctx){
+  var spec=ctx.args[1],targets=ctx.args.slice(2);
+  for(var i=0;i<targets.length;i++){
+    var n=getNode(FS,resolvePath(cwd,targets[i]));
+    if(!n){ctx.err.push("chown: cannot access '"+targets[i]+"': No such file or directory");continue}
+    ctx.out.push("chown: "+targets[i]+" 属主已设置为 "+spec+"（模拟）");
+  }
+  return 0;
+});
+reg("head",async function(ctx){
+  var n=10,path=null;
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-n"){n=parseInt(ctx.args[++i])||10}else if(ctx.args[i][0]==="-"){var v=ctx.args[i].slice(1);if(/^\d+$/.test(v))n=parseInt(v)}else path=ctx.args[i]}
+  var src=path!==null?(readFile(FS,cwd,path)||""):ctx.stdin;
+  var lines=src.split("\n").filter(function(x,i,a){return !(i===a.length-1&&x==="")});
+  if(lines.length)ctx.out.push(lines.slice(0,n).join("\n"));
+  return 0;
+});
+reg("tail",async function(ctx){
+  var n=10,path=null,follow=false;
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-n"){n=parseInt(ctx.args[++i])||10}else if(ctx.args[i]==="-f")follow=true;else if(ctx.args[i][0]==="-"){var v=ctx.args[i].slice(1);if(/^\d+$/.test(v))n=parseInt(v)}else path=ctx.args[i]}
+  var src=path!==null?(readFile(FS,cwd,path)||""):ctx.stdin;
+  var lines=src.split("\n").filter(function(x,i,a){return !(i===a.length-1&&x==="")});
+  if(lines.length)ctx.out.push(lines.slice(-n).join("\n"));
+  if(follow)ctx.out.push("（tail -f 模拟：按 Ctrl+C 或输入其他命令继续）");
+  return 0;
+});
+reg("wc",async function(ctx){
+  var paths=[];
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i][0]==="-")continue;paths.push(ctx.args[i])}
+  function sp(n,l){n=String(n);while(n.length<l)n=" "+n;return n}
+  if(!paths.length){
+    var L=ctx.stdin?(ctx.stdin.replace(/\n$/,"").split("\n").length):0;
+    ctx.out.push(sp(L,7)+" "+sp(ctx.stdin?ctx.stdin.split(/\s+/).filter(Boolean).length:0,7)+" "+sp(ctx.stdin?ctx.stdin.length:0,7));
+    return 0}
+  var tl=0,tw=0,tb=0;
+  for(var p=0;p<paths.length;p++){
+    var s=readFile(FS,cwd,paths[p])||"";
+    var l=s?s.replace(/\n$/,"").split("\n").length:0;
+    var w=s?s.split(/\s+/).filter(Boolean).length:0;
+    ctx.out.push(sp(l,7)+" "+sp(w,7)+" "+sp(s.length,7)+" "+paths[p]);
+    tl+=l;tw+=w;tb+=s.length;
+  }
+  if(paths.length>1)ctx.out.push(sp(tl,7)+" "+sp(tw,7)+" "+sp(tb,7)+" 总用量");
+  return 0;
+});
+reg("sort",async function(ctx){
+  var rev=false,paths=[],nums=false;
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-r")rev=true;else if(ctx.args[i]==="-n")nums=true;else if(ctx.args[i][0]==="-")continue;else paths.push(ctx.args[i])}
+  var src=paths.length?paths.map(function(p){return readFile(FS,cwd,p)||""}).join("\n"):ctx.stdin;
+  var lines=src.split("\n").filter(function(x,i,a){return !(i===a.length-1&&x==="")});
+  lines.sort(function(x,y){if(nums){var a=parseFloat(x)||0,b=parseFloat(y)||0;return rev?b-a:a-b}return rev?y.localeCompare(x):x.localeCompare(y)});
+  if(lines.length)ctx.out.push(lines.join("\n"));
+  return 0;
+});
+reg("uniq",async function(ctx){
+  var lines=(ctx.stdin||"").split("\n").filter(function(x,i,a){return !(i===a.length-1&&x==="")});
+  var out=[];
+  for(var i=0;i<lines.length;i++)if(i===0||lines[i]!==lines[i-1])out.push(lines[i]);
+  if(out.length)ctx.out.push(out.join("\n"));
+  return 0;
+});
+reg("cut",async function(ctx){
+  var spec=null,delim="\t",fields=null;
+  for(var i=1;i<ctx.args.length;i++){
+    var a=ctx.args[i];
+    if(a==="-f"||a.indexOf("-f")===0)fields=a==="-f"?ctx.args[++i]:a.slice(2);
+    else if(a==="-d"||a.indexOf("-d")===0)delim=(a==="-d"?ctx.args[++i]:a.slice(2))||"\t";
+    else if(a==="-c"||a.indexOf("-c")===0)spec=a==="-c"?ctx.args[++i]:a.slice(2);
+    else if(a[0]==="-")continue;
+  }
+  var lines=(ctx.stdin||"").split("\n").filter(function(x,i,a){return !(i===a.length-1&&x==="")});
+  function pick(line){
+    if(spec){var m=spec.match(/^(\d+)-(\d+)?$/);if(m){return line.slice((m[1]|0)-1,m[2]?m[2]:undefined)}var m2=spec.match(/^-(\d+)$/);if(m2)return line.slice(0,m2[1])}
+    if(fields){var parts=line.split(delim);var fs=fields.split(","),o=[];for(var i=0;i<fs.length;i++){var f=parseInt(fs[i])-1;if(parts[f]!==undefined)o.push(parts[f])}return o.join(delim)}
+    return line;
+  }
+  ctx.out.push(lines.map(pick).join("\n"));
+  return 0;
+});
+reg("tr",async function(ctx){
+  if(!ctx.args[1]||!ctx.args[2]){ctx.err.push("tr: missing operand");return 1}
+  var from=ctx.args[1],to=ctx.args[2];
+  var out=(ctx.stdin||"").split("").map(function(c){var i=from.indexOf(c);return i>=0?(to[i]||to[to.length-1]):c}).join("");
+  ctx.out.push(out);
+  return 0;
+});
+reg("grep",async function(ctx){
+  var pattern=null,ignore=false,lineNum=false,recur=false,invert=false,paths=[];
+  for(var i=1;i<ctx.args.length;i++){
+    var a=ctx.args[i];
+    if(a==="-i")ignore=true;else if(a==="-n")lineNum=true;else if(a==="-r"||a==="-R")recur=true;else if(a==="-v")invert=true;
+    else if(a[0]==="-"&&a.length>1&&a.indexOf("-")===0&&!pattern)continue;
+    else if(!pattern)pattern=a;else paths.push(a);
+  }
+  if(pattern===null){ctx.err.push("grep: 缺少模式");return 2}
+  var re;
+  try{re=new RegExp(pattern,ignore?"i":"")}catch(e){ctx.err.push("grep: 无效正则 "+pattern);return 2}
+  function scan(node,path,out){
+    var ks=Object.keys(node.ch||{});
+    for(var i=0;i<ks.length;i++){
+      var n=node.ch[ks[i]],p=path+"/"+ks[i];
+      if(n.t==="d"){if(recur)scan(n,p,out)}
+      else{
+        var lines=n.c.split("\n");
+        for(var j=0;j<lines.length;j++){
+          var hit=re.test(lines[j]);
+          if(invert)hit=!hit;
+          if(hit){out.push((recur?p+":":"")+(lineNum?(j+1)+":":"")+lines[j])}
+          re.lastIndex=0;
+        }
+      }
+    }
+  }
+  var out=[];
+  if(paths.length){for(var i=0;i<paths.length;i++){var rp=resolvePath(cwd,paths[i]);var n=getNode(FS,rp);if(!n){ctx.err.push("grep: "+paths[i]+": No such file or directory");continue}if(n.t==="d")scan(n,rp,out);else{var lines=n.c.split("\n");for(var j=0;j<lines.length;j++){var hit=re.test(lines[j]);if(invert)hit=!hit;if(hit)out.push((lineNum?(j+1)+":":"")+lines[j]);re.lastIndex=0}}}}
+  else{
+    var sl=(ctx.stdin||"").split("\n");
+    for(var j=0;j<sl.length;j++){var hit=re.test(sl[j]);if(invert)hit=!hit;if(hit)out.push((lineNum?(j+1)+":":"")+sl[j]);re.lastIndex=0}
+  }
+  if(out.length)ctx.out.push(out.join("\n"));
+  return out.length?0:1;
+});
+reg("find",async function(ctx){
+  var roots=[],opts={};
+  for(var i=1;i<ctx.args.length;i++){
+    var a=ctx.args[i];
+    if(a==="-name"||a==="-iname")opts.name=ctx.args[++i];
+    else if(a==="-type")opts.type=ctx.args[++i];
+    else if(a==="-maxdepth")opts.maxdepth=parseInt(ctx.args[++i])||0;
+    else if(a[0]==="-")continue;
+    else roots.push(a);
+  }
+  if(!roots.length)roots=["."];
+  var re=opts.name?new RegExp("^"+opts.name.replace(/[.+^${}()|[\]\\]/g,"\\$&").replace(/\*/g,".*").replace(/\?/g,".")+"$","i"):null;
+  var out=[];
+  function walk(node,path,depth){
+    if(depth>1&&opts.maxdepth&&depth>opts.maxdepth)return;
+    var ks=Object.keys(node.ch||{});
+    for(var i=0;i<ks.length;i++){
+      var n=node.ch[ks[i]],p=path+"/"+ks[i];
+      if(opts.type&&((opts.type==="d")!==(n.t==="d"))){}
+      else if(re&&!re.test(ks[i])){}
+      else out.push(p);
+      if(n.t==="d")walk(n,p,depth+1);
+    }
+  }
+  for(var r=0;r<roots.length;r++){
+    var rp=resolvePath(cwd,roots[r]);var n=getNode(FS,rp);
+    if(!n){ctx.err.push("find: '"+roots[r]+"': No such file or directory");continue}
+    if(n.t==="d")walk(n,rp,1);else out.push(rp);
+  }
+  ctx.out.push(out.join("\n"));
+  return 0;
+});
+reg("sed",async function(ctx){
+  var script=null,paths=[],inplace=false;
+  for(var i=1;i<ctx.args.length;i++){
+    var a=ctx.args[i];
+    if(a==="-i")inplace=true;
+    else if(!script&&a[0]!=="-")script=a;
+    else if(a[0]!=="-")paths.push(a);
+  }
+  if(!script){ctx.err.push("sed: 缺少脚本");return 1}
+  function applyScript(text){
+    var lines=text.split("\n");var out=[];
+    var m=script.match(/^s\/(.+?)\/(.*?)\/(g?)$/);
+    if(m){var re=new RegExp(m[1],"g"),rep=m[2].replace(/\\1/g,"$1");for(var i=0;i<lines.length;i++){out.push(lines[i].replace(re,rep))}}
+    else if(/^\/.*\/d$/.test(script)){var re2=new RegExp(script.slice(1,-2));for(var i=0;i<lines.length;i++){if(!re2.test(lines[i]))out.push(lines[i])}}
+    else{ctx.err.push("sed: 只支持 s/old/new/g 与 /pattern/d（模拟范围）");return null}
+    return out.join("\n");
+  }
+  if(paths.length){
+    for(var i=0;i<paths.length;i++){
+      var s=readFile(FS,cwd,paths[i]);if(s===null){ctx.err.push("sed: "+paths[i]+": No such file or directory");continue}
+      var r=applyScript(s);if(r===null)return 1;
+      if(inplace)writeFile(FS,cwd,paths[i],r);else ctx.out.push(r);
+    }
+    return 0;
+  }
+  var r=applyScript(ctx.stdin||"");if(r===null)return 1;
+  ctx.out.push(r);
+  return 0;
+});
+reg("awk",async function(ctx){
+  var script=null,paths=[];
+  for(var i=1;i<ctx.args.length;i++){
+    var a=ctx.args[i];
+    if(a[0]==="-F"){ctx._F=a.slice(2);continue}
+    if(a==="-F"){ctx._F=ctx.args[++i];continue}
+    if(!script&&a[0]!=="-")script=a;
+    else if(a[0]!=="-")paths.push(a);
+  }
+  if(!script){ctx.err.push("awk: 缺少程序");return 1}
+  var FSchar=ctx._F||" ";
+  function run(src){
+    var lines=src.split("\n").filter(function(x,i,a){return !(i===a.length-1&&x==="")});
+    var out=[];
+    for(var li=0;li<lines.length;li++){
+      var line=lines[li];
+      var fields=line.split(FSchar===" "?/\s+/:FSchar);
+      var NF=fields.length,NR=li+1,$0=line;
+      var fnMatch=script.match(/^\{\s*print\s+(.+)\s*\}$/);
+      if(fnMatch){
+        var expr=fnMatch[1];
+        var parts=expr.split(",");
+        var o=[];
+        for(var p=0;p<parts.length;p++){
+          var pp=parts[p].trim();
+          if(pp==="$0")o.push(line);
+          else if(pp==="NF")o.push(NF);
+          else if(pp==="NR")o.push(NR);
+          else{var m=pp.match(/^\$(\d+)$/);if(m)o.push(fields[(m[1]|0)-1]||"");else if(pp[0]==="\""&&pp.slice(-1)==="\"")o.push(pp.slice(1,-1));else if(/^[A-Za-z_]/.test(pp))o.push(eval(pp));else o.push(pp)}
+        }
+        out.push(o.join(" "));
+      }else if(/^\/.*\/$/.test(script)){var re=new RegExp(script.slice(1,-1));if(re.test(line))out.push(line)}
+      else{ctx.err.push("awk: 仅支持 {print ...} 与 /pattern/（模拟范围）");return null}
+    }
+    return out.join("\n");
+  }
+  var src=paths.length?paths.map(function(p){return readFile(FS,cwd,p)||""}).join("\n"):ctx.stdin;
+  var r=run(src);if(r===null)return 1;
+  ctx.out.push(r);
+  return 0;
+});
+reg("file",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++){
+    var n=getNode(FS,resolvePath(cwd,ctx.args[i]));
+    if(!n){ctx.err.push("file: cannot open '"+ctx.args[i]+"' (No such file)");continue}
+    if(n.t==="d")ctx.out.push(ctx.args[i]+": directory");
+    else if(/^#!/.test(n.c))ctx.out.push(ctx.args[i]+": POSIX shell script, ASCII text executable");
+    else if(/^PK/.test(n.c))ctx.out.push(ctx.args[i]+": Zip archive data");
+    else ctx.out.push(ctx.args[i]+": ASCII text");
+  }
+  return 0;
+});
+reg("stat",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++){
+    var n=getNode(FS,resolvePath(cwd,ctx.args[i]));
+    if(!n){ctx.err.push("stat: cannot stat '"+ctx.args[i]+"': No such file or directory");continue}
+    ctx.out.push("  File: "+ctx.args[i]);
+    ctx.out.push("  Size: "+(n.t==="d"?4096:(n.c?n.c.length:0))+"\tBlocks: 8\tIO Block: 4096\t"+(n.t==="d"?"directory":"regular file"));
+    ctx.out.push("Device: 801h/2049d\tInode: "+Math.abs(hash(ctx.args[i]))+"\tLinks: 1");
+    ctx.out.push("Access: ("+fmtMode(n)+")\tUid: (0/root)\tGid: (0/root)");
+    ctx.out.push("Access: 2026-09-10 10:00:00.000000000 +0800");
+    ctx.out.push("Modify: 2026-09-10 10:00:00.000000000 +0800");
+    ctx.out.push("Change: 2026-09-10 10:00:00.000000000 +0800");
+  }
+  return 0;
+});
+function hash(s){var h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
+reg("du",async function(ctx){
+  var paths=["."];
+  var a=ctx.args.slice(1);for(var i=0;i<a.length;i++)if(a[i][0]!=="-")paths=[a[i]];
+  for(var p=0;p<paths.length;p++){
+    var rp=resolvePath(cwd,paths[p]);var n=getNode(FS,rp);
+    if(!n){ctx.err.push("du: cannot access '"+paths[p]+"': No such file or directory");continue}
+    ctx.out.push("4\t"+paths[p]);
+    if(n.t==="d"){var ks=Object.keys(n.ch);for(var i=0;i<ks.length;i++)ctx.out.push("4\t"+paths[p]+"/"+ks[i])}
+  }
+  return 0;
+});
+reg("df",async function(ctx){
+  ctx.out.push("文件系统           1K-块      已用     可用 已用% 挂载点");
+  ctx.out.push("overlay         83886080  12456789  71429291   15% /");
+  ctx.out.push("tmpfs            16777216       128  16777088    1% /dev");
+  ctx.out.push("tmpfs            4194304        64   4194240    1% /run");
+  ctx.out.push("tmpfs            16777216       0    16777216    0% /sys/fs/cgroup");
+  ctx.out.push("/dev/vda1        52428800  9876543  42552257   19% /data");
+  return 0;
+});
+reg("tree",async function(ctx){
+  var rp=resolvePath(cwd,ctx.args[1]||".");var n=getNode(FS,rp);
+  if(!n){ctx.err.push("tree: No such file or directory");return 1}
+  var out=[rp];
+  function walk(node,path,prefix){
+    var ks=Object.keys(node.ch||{}).sort();
+    for(var i=0;i<ks.length;i++){
+      var last=i===ks.length-1;
+      out.push(prefix+(last?"└── ":"├── ")+ks[i]);
+      if(node.ch[ks[i]].t==="d")walk(node.ch[ks[i]],path+"/"+ks[i],prefix+(last?"    ":"│   "));
+    }
+  }
+  walk(n,rp,"");
+  out.push("");
+  ctx.out.push(out.join("\n"));
+  return 0;
+});
+/* ================= 系统命令 ================= */
+reg("whoami",async function(ctx){ctx.out.push(username);return 0});
+reg("id",async function(ctx){
+  ctx.out.push("uid="+uid+"("+username+") gid="+uid+"("+username+") groups="+uid+"("+username+"),999(docker)");
+  return 0;
+});
+reg("uname",async function(ctx){
+  var a=ctx.args.slice(1).join("");
+  if(!a){ctx.out.push("Linux");return 0}
+  if(a.indexOf("a")>=0)ctx.out.push("Linux cloudlab 6.8.0-1010-cloud-amd64 #1 SMP x86_64 GNU/Linux");
+  else if(a.indexOf("r")>=0)ctx.out.push("6.8.0-1010-cloud-amd64");
+  else if(a.indexOf("m")>=0)ctx.out.push("x86_64");
+  else if(a.indexOf("s")>=0)ctx.out.push("Linux");
+  else if(a.indexOf("n")>=0)ctx.out.push("cloudlab");
+  else if(a.indexOf("v")>=0)ctx.out.push("#1 SMP PREEMPT_DYNAMIC x86_64");
+  return 0;
+});
+reg("hostname",async function(ctx){
+  if(ctx.args[1]){hostname=ctx.args[1];renderPrompt();ctx.out.push(ctx.args[1])}
+  else ctx.out.push(hostname);
+  return 0;
+});
+reg("date",async function(ctx){
+  var d=new Date(),wd=["一","二","三","四","五","六","日"][d.getDay()];
+  ctx.out.push(d.getFullYear()+"年 "+pad(d.getMonth()+1)+"月 "+pad(d.getDate())+"日 星期"+wd+" "+pad(d.getHours())+":"+pad(d.getMinutes())+":"+pad(d.getSeconds())+" CST");
+  return 0;
+});
+reg("cal",async function(ctx){
+  var d=new Date(),y=ctx.args[1]?parseInt(ctx.args[1]):d.getFullYear(),m=ctx.args[2]?parseInt(ctx.args[2]):d.getMonth()+1;
+  var first=new Date(y,m-1,1),days=new Date(y,m,0).getDate();
+  var head=["日","一","二","三","四","五","六"];
+  var lines=["      "+y+" 年 "+m+" 月","",head.join("  ")];
+  var cur="";
+  for(var i=0;i<first.getDay();i++)cur+="    ";
+  for(var day=1;day<=days;day++){
+    cur+=pad(day,2)+"  ";
+    if(first.getDay()+day-1===6||day===days){lines.push(cur);cur=""}
+  }
+  ctx.out.push(lines.join("\n"));
+  return 0;
+});
+reg("uptime",async function(ctx){
+  ctx.out.push(" 10:00:00 up 12 days,  3:42,  2 users,  load average: 0.15, 0.08, 0.06");
+  return 0;
+});
+reg("free",async function(ctx){
+  ctx.out.push("              总计         已用        空闲       共享    缓冲/缓存    可用");
+  ctx.out.push("内存:       8023456     1892345     4234567      123456     1896544     5734912");
+  ctx.out.push("交换:       2097152       12345     2084807");
+  return 0;
+});
+var PROC=[
+  {pid:1,name:"systemd",cpu:"0.0",mem:"0.1",stat:"S",cmd:"/sbin/init"},
+  {pid:2,name:"kthreadd",cpu:"0.0",mem:"0.0",stat:"S",cmd:"[kthreadd]"},
+  {pid:345,name:"sshd",cpu:"0.0",mem:"0.2",stat:"S",cmd:"/usr/sbin/sshd -D"},
+  {pid:412,name:"containerd",cpu:"0.1",mem:"0.5",stat:"S",cmd:"/usr/bin/containerd"},
+  {pid:489,name:"dockerd",cpu:"0.2",mem:"1.2",stat:"S",cmd:"/usr/bin/dockerd -H fd://"},
+  {pid:532,name:"kubelet",cpu:"0.3",mem:"1.5",stat:"S",cmd:"/usr/bin/kubelet --config=/etc/kubernetes/kubelet.conf"},
+  {pid:601,name:"nginx",cpu:"0.0",mem:"0.3",stat:"S",cmd:"nginx: master process nginx -g daemon off;"},
+  {pid:602,name:"nginx",cpu:"0.0",mem:"0.2",stat:"S",cmd:"nginx: worker process"},
+  {pid:788,name:"kube-proxy",cpu:"0.1",mem:"0.4",stat:"S",cmd:"/usr/local/bin/kube-proxy --config=/var/lib/kube-proxy/config.conf"},
+  {pid:1024,name:"etcd",cpu:"0.4",mem:"2.1",stat:"S",cmd:"/usr/local/bin/etcd --data-dir=/var/lib/etcd"},
+  {pid:1088,name:"kube-apiserver",cpu:"0.5",mem:"3.2",stat:"S",cmd:"kube-apiserver --advertise-address=10.0.0.11"},
+  {pid:1156,name:"kube-controller-manager",cpu:"0.2",mem:"1.1",stat:"S",cmd:"kube-controller-manager --cluster-cidr=10.244.0.0/16"},
+  {pid:1218,name:"kube-scheduler",cpu:"0.1",mem:"0.9",stat:"S",cmd:"kube-scheduler --bind-address=10.0.0.11"},
+  {pid:1567,name:"bash",cpu:"0.0",mem:"0.1",stat:"S",cmd:"bash"},
+  {pid:1568,name:"ps",cpu:"0.0",mem:"0.0",stat:"R",cmd:"ps aux"}
+];
+reg("ps",async function(ctx){
+  var a=ctx.args.slice(1).join("");
+  ctx.out.push("USER       PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND");
+  PROC.forEach(function(p){ctx.out.push("root      "+String(p.pid).padStart(5)+"  "+p.cpu+"  "+p.mem+" 165432  8932 pts/0    "+p.stat+"   09:51   0:00 "+p.cmd)});
+  if(a.indexOf("e")<0&&a.indexOf("a")<0){}
+  return 0;
+});
+reg("top",async function(ctx){
+  ctx.out.push("top - 10:00:01 up 12 days,  3:42,  2 users,  load average: 0.15, 0.08, 0.06");
+  ctx.out.push("Tasks: 156 total,   1 running, 155 sleeping,   0 stopped,   0 zombie");
+  ctx.out.push("%Cpu(s):  2.3 us,  0.7 sy,  0.0 ni, 96.8 id,  0.2 wa,  0.0 hi,  0.0 si,  0.0 st");
+  ctx.out.push("MiB Mem :   7835.4 total,   4134.3 free,   1848.0 used,   1853.1 buff/cache");
+  ctx.out.push("MiB Swap:   2048.0 total,   2036.0 free,     12.0 used.   5601.7 avail Mem");
+  ctx.out.push("");
+  ctx.out.push("    PID USER      PR  NI    VIRT    RES    SHR S  %CPU  %MEM     TIME+ COMMAND");
+  PROC.slice().reverse().forEach(function(p){ctx.out.push(String(p.pid).padStart(6)+" root      20   0  165432  12896   8920 S   0.3   0.2   0:00.01 "+p.cmd.slice(0,40))});
+  ctx.out.push("（top 为静态快照模拟，持续监控请用 ps/watch）");
+  return 0;
+});
+reg("kill",async function(ctx){
+  var pid=parseInt(ctx.args[ctx.args.length-1]);
+  var idx=-1;
+  PROC.forEach(function(p,i){if(p.pid===pid)idx=i});
+  if(idx<0){ctx.err.push("bash: kill: ("+pid+") - 没有这个进程");return 1}
+  PROC.splice(idx,1);
+  ctx.out.push("已终止进程 "+pid+"（模拟）");
+  return 0;
+});
+reg("env",async function(ctx){Object.keys(env).forEach(function(k){ctx.out.push(k+"="+env[k])});return 0});
+reg("export",async function(ctx){
+  if(!ctx.args[1]){return await CMDS.env.fn(ctx)}
+  var parts=expandVar(ctx.args[1]).split("=");
+  if(parts.length>=2){env[parts[0]]=parts.slice(1).join("=");if(parts[0]==="HOME")cwd=env.HOME;renderPrompt()}
+  return 0;
+});
+reg("set",async function(ctx){
+  Object.keys(env).sort().forEach(function(k){ctx.out.push(k+"="+env[k])});
+  return 0;
+});
+reg("unset",async function(ctx){
+  if(ctx.args[1])delete env[ctx.args[1]];
+  return 0;
+});
+reg("which",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++){
+    if(CMDS[ctx.args[i]])ctx.out.push("/usr/bin/"+ctx.args[i]);
+    else ctx.err.push("/usr/bin/which: no "+ctx.args[i]+" in ("+env.PATH+")");
+  }
+  return 0;
+});
+reg("type",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++){
+    var n=ctx.args[i];
+    if(CMDS[n])ctx.out.push(n+" 是 shell 内建命令");
+    else if(aliases[n])ctx.out.push(n+" 是 "+n+" 的别名");
+    else ctx.out.push(n+" 是 /usr/bin/"+n);
+  }
+  return 0;
+});
+reg("alias",async function(ctx){
+  if(!ctx.args[1]){Object.keys(aliases).forEach(function(k){ctx.out.push("alias "+k+"='"+aliases[k]+"'")});return 0}
+  var m=ctx.args[1].match(/^(\w+)=(.*)$/);
+  if(m)aliases[m[1]]=m[2].replace(/^['"]|['"]$/g,"");
+  return 0;
+});
+reg("unalias",async function(ctx){
+  for(var i=1;i<ctx.args.length;i++)delete aliases[ctx.args[i]];
+  return 0;
+});
+reg("history",async function(ctx){
+  history.forEach(function(h,i){ctx.out.push("  "+(i+1)+"  "+h)});
+  return 0;
+});
+reg("su",async function(ctx){
+  var target=ctx.args[1]||"root";
+  username=target;uid=target==="root"?0:1000;
+  if(target!=="root")env.HOME="/home/"+target;
+  else env.HOME="/root";
+  cwd=env.HOME;renderPrompt();
+  ctx.out.push(target+"@cloudlab:~# ");
+  return 0;
+});
+reg("sudo",async function(ctx){
+  if(ctx.args[1]){var r=await execPipeline(ctx.args.slice(1).map(quoteArg).join(" "));ctx.out=r.out;ctx.err=r.err;return r.exit}
+  return 0;
+});
+reg("groups",async function(ctx){ctx.out.push(username+" : "+username+" docker sudo");return 0});
+reg("who",async function(ctx){ctx.out.push("root     pts/0        2026-09-10 09:30 (10.0.0.5)\nstudent  pts/1        2026-09-10 09:52 (10.0.0.8)");return 0});
+reg("w",async function(ctx){ctx.out.push(" 10:00:01 up 12 days,  3:42,  2 users,  load average: 0.15, 0.08, 0.06\nUSER     TTY      FROM             LOGIN@   IDLE   JCPU   PCPU WHAT\nroot     pts/0    10.0.0.5         09:30    5:00   0.01s  0.01s -bash");return 0});
+reg("sleep",async function(ctx){
+  var sec=parseFloat(ctx.args[1])||1;
+  await new Promise(function(r){setTimeout(r,sec*1000)});
+  return 0;
+});
+reg("exit",async function(ctx){
+  ctx.out.push("logout");
+  ctx.out.push("（模拟环境：关闭页面或继续输入命令均可，状态已保存在本机浏览器）");
+  return 0;
+});
+reg("logout",async function(ctx){return await CMDS.exit.fn(ctx)});
+reg("man",async function(ctx){
+  var n=ctx.args[1];
+  if(n&&CMDS[n]){ctx.out.push("NAME");ctx.out.push("    "+n+" - "+CMDS[n].desc);ctx.out.push("");ctx.out.push("SYNOPSIS");ctx.out.push("    "+n+" [选项] [参数]");ctx.out.push("");ctx.out.push("DESCRIPTION");ctx.out.push("    "+CMDS[n].desc+"。本环境为模拟器，支持该命令的核心用法。");ctx.out.push("");ctx.out.push("提示：输入 help linux / help docker / help k8s 查看更多示例。");return 0}
+  if(n){ctx.err.push("没有 "+n+" 的手册页条目");return 1}
+  ctx.err.push("缺少操作数：man <命令名>");
+  return 1;
+});
+/* ================= 网络命令 ================= */
+reg("ping",async function(ctx){
+  var target=ctx.args[1];
+  if(!target){ctx.err.push("ping: usage error: Destination address required");return 2}
+  ctx.out.push("PING "+target+" (10.0.0.200) 56(84) bytes of data.");
+  ctx.out.push("64 bytes from "+target+" (10.0.0.200): icmp_seq=1 ttl=64 time=0.034 ms");
+  ctx.out.push("64 bytes from "+target+" (10.0.0.200): icmp_seq=2 ttl=64 time=0.031 ms");
+  ctx.out.push("64 bytes from "+target+" (10.0.0.200): icmp_seq=3 ttl=64 time=0.029 ms");
+  ctx.out.push("64 bytes from "+target+" (10.0.0.200): icmp_seq=4 ttl=64 time=0.033 ms");
+  ctx.out.push("");
+  ctx.out.push("--- "+target+" ping statistics ---");
+  ctx.out.push("4 packets transmitted, 4 received, 0% packet loss, time 3034ms");
+  ctx.out.push("rtt min/avg/max/mdev = 0.029/0.031/0.034/0.002 ms");
+  return 0;
+});
+reg("ifconfig",async function(ctx){
+  if(ctx.args[1]==="-a"||!ctx.args[1]){
+    ctx.out.push("eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500");
+    ctx.out.push("        inet 10.0.0.11  netmask 255.255.255.0  broadcast 10.0.0.255");
+    ctx.out.push("        ether 02:42:ac:11:00:0b  txqueuelen 0  (Ethernet)");
+    ctx.out.push("        RX packets 1234567  bytes 987654321 (941.9 MiB)");
+    ctx.out.push("        TX packets 234567  bytes 34567890 (32.9 MiB)");
+    ctx.out.push("");
+    ctx.out.push("lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536");
+    ctx.out.push("        inet 127.0.0.1  netmask 255.0.0.0");
+    ctx.out.push("        loop  txqueuelen 1000  (Local Loopback)");
+    return 0;
+  }
+  return 0;
+});
+reg("ip",async function(ctx){
+  var sub=ctx.args[1]||"";
+  if(sub==="addr"||sub==="a"||sub==="address"){
+    ctx.out.push("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 state UNKNOWN qlen 1000");
+    ctx.out.push("    inet 127.0.0.1/8 scope host lo");
+    ctx.out.push("2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 state UP qlen 1000");
+    ctx.out.push("    inet 10.0.0.11/24 brd 10.0.0.255 scope global eth0");
+    ctx.out.push("    inet6 fe80::42:acff:fe11:b/64 scope link");
+    ctx.out.push("3: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 state DOWN");
+    ctx.out.push("    inet 172.17.0.1/16 scope global docker0");
+    ctx.out.push("4: cni0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 state UP qlen 1000");
+    ctx.out.push("    inet 10.244.0.1/24 scope global cni0");
+    return 0;
+  }
+  if(sub==="route"||sub==="r"){ctx.out.push("default via 10.0.0.1 dev eth0\n10.0.0.0/24 dev eth0 proto kernel scope link src 10.0.0.11\n10.244.0.0/16 dev cni0 proto kernel scope link");return 0}
+  if(sub==="link"||sub==="l"){ctx.out.push("1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN mode DEFAULT\n2: eth0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT\n3: docker0: <NO-CARRIER,BROADCAST,MULTICAST,UP> mtu 1500 qdisc noqueue state DOWN mode DEFAULT\n4: cni0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UP mode DEFAULT");return 0}
+  if(sub==="neigh"||sub==="n"){ctx.out.push("10.0.0.1 dev eth0 lladdr 02:42:ac:11:00:01 REACHABLE\n10.0.0.5 dev eth0 lladdr 02:42:ac:11:00:05 STALE");return 0}
+  ctx.err.push("ip: 用法: ip {addr|route|link|neigh} ...（模拟）");
+  return 1;
+});
+reg("netstat",async function(ctx){
+  ctx.out.push("Active Internet connections (servers and established)");
+  ctx.out.push("Proto Recv-Q Send-Q Local Address           Foreign Address         State");
+  ctx.out.push("tcp        0      0 0.0.0.0:22              0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 0.0.0.0:80              0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 0.0.0.0:443             0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 10.0.0.11:6443          0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 10.0.0.11:2379          0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 127.0.0.1:2379          0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 172.17.0.1:5000         0.0.0.0:*               LISTEN");
+  ctx.out.push("tcp        0      0 10.0.0.11:22            10.0.0.5:52341          ESTABLISHED");
+  return 0;
+});
+reg("ss",async function(ctx){
+  ctx.out.push("State  Recv-Q Send-Q  Local Address:Port   Peer Address:Port Process");
+  ctx.out.push("LISTEN 0      128    0.0.0.0:22            0.0.0.0:*              users:((\"sshd\"))");
+  ctx.out.push("LISTEN 0      511    0.0.0.0:80            0.0.0.0:*              users:((\"nginx\"))");
+  ctx.out.push("LISTEN 0      128    10.0.0.11:6443        0.0.0.0:*              users:((\"kube-apiserver\"))");
+  ctx.out.push("ESTAB  0      0      10.0.0.11:22          10.0.0.5:52341         users:((\"sshd\"))");
+  return 0;
+});
+reg("curl",async function(ctx){
+  var a=ctx.args.slice(1),url=null,method="GET",headers=[],data=null,quiet=false;
+  for(var i=0;i<a.length;i++){
+    if(a[i]==="-I"||a[i]==="--head")method="HEAD";
+    else if(a[i]==="-s")quiet=true;
+    else if(a[i]==="-X")method=(a[++i]||"GET");
+    else if(a[i]==="-H")headers.push(a[++i]);
+    else if(a[i]==="-d"||a[i]==="--data")data=a[++i];
+    else if(a[i]==="-v"){/*verbose*/}
+    else if(a[i]==="-o"||a[i]==="-O"){a[i+1];i++}
+    else if(a[i][0]==="-")continue;
+    else url=a[i];
+  }
+  if(!url){ctx.err.push("curl: try 'curl --help' for more information");return 2}
+  if(method==="HEAD"){
+    ctx.out.push("HTTP/1.1 200 OK");
+    ctx.out.push("Server: nginx/1.24.0");
+    ctx.out.push("Content-Type: text/html");
+    ctx.out.push("Content-Length: 612");
+    ctx.out.push("Connection: keep-alive");
+    return 0;
+  }
+  if(url.indexOf("localhost")>=0||url.indexOf("127.0.0.1")>=0){
+    ctx.out.push("<h1>Welcome to nginx!</h1>");
+    ctx.out.push("<p>If you see this page, the nginx web server is successfully installed and");
+    ctx.out.push("working. Further configuration is required.</p>");
+    return 0;
+  }
+  ctx.out.push("{");
+  ctx.out.push("  \"args\": {},");
+  ctx.out.push("  \"headers\": {\"Host\": \""+url.replace(/^https?:\/\//,"").split("/")[0]+"\"},");
+  ctx.out.push("  \"url\": \""+url+"\"");
+  ctx.out.push("}");
+  return 0;
+});
+reg("wget",async function(ctx){
+  var url=null,o=null;
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-O")o=ctx.args[++i];else if(ctx.args[i][0]==="-")continue;else url=ctx.args[i]}
+  if(!url){ctx.err.push("wget: missing URL");return 1}
+  var name=o||url.split("/").pop()||"index.html";
+  var content="<html><body><h1>"+name+"</h1></body></html>\n";
+  writeFile(FS,cwd,name,content);
+  ctx.out.push("--2026-09-10 10:00:02--  "+url);
+  ctx.out.push("正在解析主机 "+url.replace(/^https?:\/\//,"").split("/")[0]+"... 223.5.5.5");
+  ctx.out.push("正在连接 "+url.replace(/^https?:\/\//,"").split("/")[0]+"|223.5.5.5|:443... 已连接。");
+  ctx.out.push("已发出 HTTP 请求，正在等待响应... 200 OK");
+  ctx.out.push("长度："+content.length+" [text/html]");
+  ctx.out.push("正在保存到: '"+name+"'");
+  ctx.out.push("");
+  ctx.out.push(name+"          100%[===================>]      "+content.length+"  --.-KB/s  用时 0s");
+  ctx.out.push("");
+  ctx.out.push("2026-09-10 10:00:02 (7.2 MB/s) - 已保存 '"+name+"' ["+content.length+"]");
+  return 0;
+});
+reg("nslookup",async function(ctx){
+  var d=ctx.args[1]||"localhost";
+  ctx.out.push("Server:		223.5.5.5");
+  ctx.out.push("Address:	223.5.5.5#53");
+  ctx.out.push("");
+  ctx.out.push("Non-authoritative answer:");
+  ctx.out.push("Name:	"+d);
+  ctx.out.push("Address: 10.0.0."+(Math.abs(hash(d))%200+10));
+  return 0;
+});
+reg("dig",async function(ctx){
+  var d=ctx.args[1]||"localhost";
+  ctx.out.push("; <<>> DiG 9.18.19-1~deb12u1 <<>> "+d);
+  ctx.out.push(";; global options: +cmd");
+  ctx.out.push(";; Got answer:");
+  ctx.out.push(";; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: "+(12345+Math.abs(hash(d))%50000));
+  ctx.out.push(";; flags: qr rd ra; QUERY: 1, ANSWER: 1, AUTHORITY: 0, ADDITIONAL: 1");
+  ctx.out.push("");
+  ctx.out.push(";; QUESTION SECTION:");
+  ctx.out.push(";"+d+".\t\t\tIN\tA");
+  ctx.out.push("");
+  ctx.out.push(";; ANSWER SECTION:");
+  ctx.out.push(d+".\t\t600\tIN\tA\t10.0.0."+(Math.abs(hash(d))%200+10));
+  ctx.out.push("");
+  ctx.out.push(";; Query time: 12 msec");
+  ctx.out.push(";; SERVER: 223.5.5.5#53(223.5.5.5) (UDP)");
+  return 0;
+});
+reg("traceroute",async function(ctx){
+  var d=ctx.args[1]||"8.8.8.8";
+  ctx.out.push("traceroute to "+d+" ("+d+"), 30 hops max, 60 byte packets");
+  ctx.out.push(" 1  10.0.0.1 (10.0.0.1)  0.221 ms  0.203 ms  0.190 ms");
+  ctx.out.push(" 2  100.64.0.1 (100.64.0.1)  2.115 ms  2.098 ms  2.087 ms");
+  ctx.out.push(" 3  219.158.1.1 (219.158.1.1)  8.223 ms  8.201 ms  8.188 ms");
+  ctx.out.push(" 4  "+d+" ("+d+")  12.345 ms  12.301 ms  12.289 ms");
+  return 0;
+});
+reg("nc",async function(ctx){
+  if(ctx.args[1]==="-zv"){ctx.out.push("Connection to "+ctx.args[2]+" "+ctx.args[3]+" port ["+ctx.args[3]+"/tcp] succeeded!");return 0}
+  ctx.err.push("nc: 用法示例: nc -zv host port（模拟）");
+  return 1;
+});
+reg("host",async function(ctx){
+  var d=ctx.args[1]||"localhost";
+  ctx.out.push(d+" has address 10.0.0."+(Math.abs(hash(d))%200+10));
+  return 0;
+});
+reg("route",async function(ctx){
+  ctx.out.push("Kernel IP routing table");
+  ctx.out.push("Destination     Gateway         Genmask         Flags Metric Ref    Use Iface");
+  ctx.out.push("default         10.0.0.1        0.0.0.0         UG    0      0        0 eth0");
+  ctx.out.push("10.0.0.0        0.0.0.0         255.255.255.0   U     0      0        0 eth0");
+  ctx.out.push("10.244.0.0      0.0.0.0         255.255.0.0     U     0      0        0 cni0");
+  return 0;
+});
+/* ================= 用户管理 ================= */
+var USERS={root:{uid:0,gid:0,home:"/root",shell:"/bin/bash"},student:{uid:1000,gid:1000,home:"/home/student",shell:"/bin/bash"}};
+function syncUsers(){
+  var passwd=[];Object.keys(USERS).forEach(function(u){passwd.push(u+":x:"+USERS[u].uid+":"+USERS[u].gid+":"+u+":"+USERS[u].home+":"+USERS[u].shell)});
+  writeFile(FS,"/etc","/etc/passwd",passwd.join("\n")+"\n");
+}
+reg("useradd",async function(ctx){
+  var name=null,opts={};
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-m"||ctx.args[i]==="-s"||ctx.args[i]==="-u"||ctx.args[i]==="-g"||ctx.args[i]==="-d"){opts[ctx.args[i]]=ctx.args[++i]}else if(ctx.args[i][0]==="-"){opts[ctx.args[i]]=true}else name=ctx.args[i]}
+  if(!name){ctx.err.push("useradd: missing operand");return 1}
+  if(USERS[name]){ctx.err.push("useradd: user '"+name+"' already exists");return 9}
+  USERS[name]={uid:2000+Object.keys(USERS).length,gid:2000+Object.keys(USERS).length,home:opts["-d"]||"/home/"+name,shell:opts["-s"]||"/bin/bash"};
+  syncUsers();
+  ctx.out.push("已创建用户 "+name+"（模拟）");
+  return 0;
+});
+reg("userdel",async function(ctx){
+  var name=ctx.args[ctx.args.length-1];
+  if(!name||!USERS[name]){ctx.err.push("userdel: user '"+name+"' does not exist");return 6}
+  delete USERS[name];syncUsers();
+  ctx.out.push("已删除用户 "+name+"（模拟）");
+  return 0;
+});
+reg("passwd",async function(ctx){
+  ctx.out.push("passwd: 已更新密码（模拟环境，实际密码无需输入）");
+  return 0;
+});
+reg("groupadd",async function(ctx){
+  ctx.out.push("groupadd: 已创建组 "+ctx.args[ctx.args.length-1]+"（模拟）");
+  return 0;
+});
+/* ================= 包管理 ================= */
+var PKGS=["nginx","nginx-common","redis-server","mysql-server","docker-ce","kubelet","kubectl","kubeadm","curl","vim","tree","htop","git","python3","nodejs","openssh-server","jq","net-tools","dnsutils"];
+reg("apt",async function(ctx){return await aptImpl(ctx,ctx.args.slice(1))});
+reg("apt-get",async function(ctx){return await aptImpl(ctx,ctx.args.slice(1))});
+async function aptImpl(ctx,a){
+  var act=a[0],pkg=a[1];
+  if(act==="update"){ctx.out.push("命中:1 http://archive.ubuntu.com/ubuntu jammy InRelease");ctx.out.push("获取:2 http://archive.ubuntu.com/ubuntu jammy-updates InRelease [119 kB]");ctx.out.push("已下载 25.1 MB，耗时 2s (12.5 MB/s)");ctx.out.push("正在读取软件包列表... 完成");return 0}
+  if(act==="install"){
+    if(!pkg){ctx.err.push("apt: 未指定软件包");return 2}
+    if(PKGS.indexOf(pkg)<0){ctx.err.push("E: 无法定位软件包 "+pkg);return 100}
+    ctx.out.push("正在读取软件包列表... 完成");
+    ctx.out.push("正在分析软件包的依赖关系树... 完成");
+    ctx.out.push("下列【新】软件包将被安装：");
+    ctx.out.push("  "+pkg);
+    ctx.out.push("升级 0 个软件包，新安装 1 个软件包");
+    ctx.out.push("需要下载 0 B/1,234 kB 的归档。");
+    ctx.out.push("解压缩后会消耗 5,678 kB 的额外空间。");
+    ctx.out.push("正在选中未选择的软件包 "+pkg+"。");
+    ctx.out.push("正在设置 "+pkg+" (1.0-1) ...");
+    ctx.out.push("");
+    if(pkg.indexOf("nginx")===0){mkdirP(FS,cwd,"/usr/sbin");writeFile(FS,cwd,"/usr/sbin/nginx","#!/bin/sh\necho nginx running\n");mkdirP(FS,cwd,"/etc/nginx");writeFile(FS,cwd,"/etc/nginx/nginx.conf","user www-data;\nworker_processes auto;\n")}
+    if(pkg==="git"){mkdirP(FS,cwd,"/usr/bin");writeFile(FS,cwd,"/usr/bin/git","#!/bin/sh\necho git ok\n")}
+    return 0}
+  if(act==="remove"||act==="purge"){ctx.out.push("正在删除软件包 "+pkg+" ...");return 0}
+  if(act==="list"){ctx.out.push("Listing... Done");ctx.out.push("nginx/jammy 1.24.0-1 amd64");ctx.out.push("redis-server/jammy 7.0.15 amd64");ctx.out.push("mysql-server/jammy 8.0.39 amd64");ctx.out.push("kubectl/1.30.2 amd64");return 0}
+  if(act==="search"){var kw=pkg||"";ctx.out.push("正在排序... 完成");PKGS.filter(function(p){return p.indexOf(kw)>=0}).forEach(function(p){ctx.out.push(p+"/jammy,now 1.0 amd64 [已安装]")});return 0}
+  ctx.err.push("apt: 模拟器支持 update / install / remove / list / search");
+  return 1;
+}
+reg("yum",async function(ctx){ctx.out.push("yum: 模拟环境使用 apt 包管理（本机为 Debian/Ubuntu 系）。试试: apt install nginx");return 0});
+reg("dnf",async function(ctx){return await CMDS.yum.fn(ctx)});
+reg("rpm",async function(ctx){ctx.out.push("rpm: 模拟环境使用 apt 包管理（本机为 Debian/Ubuntu 系）");return 0});
+/* ================= 压缩命令 ================= */
+reg("tar",async function(ctx){
+  var a=ctx.args.slice(1),create=false,extract=false,list=false,gzip=false,file=null,paths=[];
+  function parseOpts(optStr){
+    for(var j=0;j<optStr.length;j++){
+      var o=optStr[j];
+      if(o==="c")create=true;
+      if(o==="x")extract=true;
+      if(o==="t")list=true;
+      if(o==="z")gzip=true;
+      if(o==="f"){file=a[++i]||a[i+1]}
+      if(o==="v"){}
+    }
+  }
+  for(var i=0;i<a.length;i++){
+    var t=a[i];
+    if(t[0]==="-"&&t.length>1&&!/^-\d/.test(t)){parseOpts(t.slice(1));continue}
+    if(t==="--create")create=true;else if(t==="--extract")extract=true;else if(t==="--list")list=true;
+    else if(/^[ctxzfjv]+$/.test(t)&&t.indexOf("f")>=0){parseOpts(t)}
+    else if(t[0]==="-")continue;
+    else paths.push(t);
+  }
+  if(create){
+    if(!file){ctx.err.push("tar: 缺少 -f 参数");return 1}
+    var list=[];
+    paths.forEach(function(p){list.push(p)});
+    var meta={type:"tar",created:nowStr(),files:list};
+    writeFile(FS,cwd,file,JSON.stringify(meta));
+    ctx.out.push((gzip?"gzip: 压缩中":"tar: 归档中")+" -> "+file+"（模拟，含 "+(list.length||1)+" 个条目）");
+    return 0}
+  if(list||extract){
+    if(!file){ctx.err.push("tar: 缺少 -f 参数");return 1}
+    var meta=null;try{meta=JSON.parse(readFile(FS,cwd,file)||"")}catch(e){}
+    if(meta&&meta.type==="tar"){
+      if(list){meta.files.forEach(function(f){ctx.out.push(f)})}
+      else{meta.files.forEach(function(f){ctx.out.push(f+"/")});ctx.out.push("已解压到当前目录（模拟）")}
+      return 0}
+    ctx.err.push("tar: 这不是 tar 归档文件（模拟器仅识别本环境生成的归档）");
+    return 2}
+  ctx.err.push("tar: 用法: tar -czf out.tar.gz <文件...> | tar -xzf out.tar.gz | tar -tzf out.tar.gz");
+  return 1;
+});
+</script>
+<script>
+reg("gzip",async function(ctx){
+  var f=ctx.args[ctx.args.length-1];
+  if(!f){ctx.err.push("gzip: 缺少文件");return 1}
+  var c=readFile(FS,cwd,f);
+  if(c===null){ctx.err.push("gzip: "+f+": No such file or directory");return 1}
+  writeFile(FS,cwd,f+".gz","GZIP:"+btoa(c));
+  if(ctx.args.indexOf("-d")>=0||ctx.args.indexOf("--decompress")>=0){}
+  ctx.out.push("已压缩 "+f+" -> "+f+".gz（模拟）");
+  return 0;
+});
+reg("gunzip",async function(ctx){
+  var f=ctx.args[ctx.args.length-1];
+  if(!f){ctx.err.push("gunzip: 缺少文件");return 1}
+  var c=readFile(FS,cwd,f);
+  if(c===null){ctx.err.push("gunzip: "+f+": No such file or directory");return 1}
+  if(c.indexOf("GZIP:")===0){writeFile(FS,cwd,f.replace(/\.gz$/,""),atob(c.slice(5)))}
+  ctx.out.push("已解压 "+f+"（模拟）");
+  return 0;
+});
+reg("zip",async function(ctx){
+  var out=ctx.args[1],files=ctx.args.slice(2);
+  if(!out||!files.length){ctx.err.push("zip: 缺少参数");return 1}
+  writeFile(FS,cwd,out,"ZIP:"+files.join(","));
+  ctx.out.push("  adding: "+files.join("  adding: "));
+  ctx.out.push("已创建压缩包 "+out+"（模拟）");
+  return 0;
+});
+reg("unzip",async function(ctx){
+  var f=ctx.args[1];
+  if(!f){ctx.err.push("unzip: 缺少文件");return 1}
+  var c=readFile(FS,cwd,f)||"";
+  if(c.indexOf("ZIP:")===0){c.slice(4).split(",").filter(Boolean).forEach(function(x){ctx.out.push("   inflating: "+x)})}
+  else ctx.out.push("已解压 "+f+"（模拟）");
+  return 0;
+});
+/* ================= 服务管理 ================= */
+var SERVICES={nginx:{running:true,enabled:true,desc:"A high performance web server"},mysql:{running:true,enabled:true,desc:"MySQL Community Server"},redis:{running:false,enabled:false,desc:"Advanced key-value store"},docker:{running:true,enabled:true,desc:"Docker Application Container Engine"},kubelet:{running:true,enabled:true,desc:"Kubernetes Kubelet Server"}};
+function svcStatus(name){var s=SERVICES[name];if(!s)return null;return s.running?"● "+name+".service - "+s.desc+"\n     Active: active (running)"+(s.enabled?"\n     Loaded: loaded (/etc/systemd/system/"+name+".service; enabled; preset: enabled)":"\n     Loaded: loaded (/etc/systemd/system/"+name+".service; disabled; preset: enabled)")+"\n   Main PID: "+((PROC.find(function(p){return p.name===name})||{}).pid||"1234")+"\n     Status: \"运行中\"":"● "+name+".service - "+s.desc+"\n     Loaded: loaded (/etc/systemd/system/"+name+".service; "+(s.enabled?"enabled":"disabled")+"; preset: enabled)\n     Active: inactive (dead)"}
+reg("systemctl",async function(ctx){
+  var act=ctx.args[1],svc=ctx.args[2]?ctx.args[2].replace(/\.service$/,""):null;
+  if(act==="status"){
+    if(!svc){ctx.out.push("● 系统状态\n     State: running\n     Jobs: 0 queued\n    Failed: 0 units\n     Since: 2026-08-29 06:18:00 CST\n   CGroup: /");return 0}
+    var s=SERVICES[svc];
+    if(!s){ctx.err.push("Unit "+svc+".service could not be found.");return 1}
+    ctx.out.push(svcStatus(svc));
+    return 0}
+  if(act==="start"||act==="stop"||act==="restart"||act==="reload"||act==="enable"||act==="disable"){
+    if(!svc){ctx.err.push("systemctl: 缺少服务名");return 1}
+    if(!SERVICES[svc]){ctx.err.push("Failed to "+act+" "+svc+".service: Unit not found.");return 1}
+    if(act==="start")SERVICES[svc].running=true;
+    if(act==="stop")SERVICES[svc].running=false;
+    if(act==="restart"){SERVICES[svc].running=true;ctx.out.push("Job for "+svc+".service started.")}
+    if(act==="enable")SERVICES[svc].enabled=true;
+    if(act==="disable")SERVICES[svc].enabled=false;
+    if(act==="start"||act==="stop"){ctx.out.push("Job for "+svc+".service started.")}
+    if(act==="enable"){ctx.out.push("Created symlink /etc/systemd/system/multi-user.target.wants/"+svc+".service → /lib/systemd/system/"+svc+".service.")}
+    if(act==="disable"){ctx.out.push("Removed /etc/systemd/system/multi-user.target.wants/"+svc+".service.")}
+    return 0}
+  if(act==="list-units"||act==="list"||!act){
+    ctx.out.push("UNIT                     LOAD   ACTIVE SUB     DESCRIPTION");
+    Object.keys(SERVICES).forEach(function(n){var s=SERVICES[n];ctx.out.push(n+".service    loaded active "+(s.running?"running":"dead")+"     "+s.desc)});
+    return 0}
+  if(act==="is-active"){ctx.out.push(SERVICES[svc]&&SERVICES[svc].running?"active":"inactive");return 0}
+  if(act==="is-enabled"){ctx.out.push(SERVICES[svc]&&SERVICES[svc].enabled?"enabled":"disabled");return 0}
+  ctx.err.push("systemctl: 模拟器支持 status / start / stop / restart / enable / disable / list-units / is-active / is-enabled");
+  return 1;
+});
+reg("service",async function(ctx){
+  var svc=ctx.args[1],act=ctx.args[2];
+  if(SERVICES[svc]){if(act==="start")SERVICES[svc].running=true;if(act==="stop")SERVICES[svc].running=false;if(act==="restart")SERVICES[svc].running=true;if(act==="status")ctx.out.push(svcStatus(svc));else ctx.out.push(" * "+svc+" "+(act==="stop"?"已停止":(act==="restart"?"已重启":"已启动")));return 0}
+  ctx.err.push("service: "+svc+": unrecognized service");
+  return 1;
+});
+reg("journalctl",async function(ctx){
+  var svc=null;
+  for(var i=1;i<ctx.args.length;i++){if(ctx.args[i]==="-u")svc=ctx.args[++i];else if(ctx.args[i][0]==="-")continue}
+  if(!svc){ctx.err.push("journalctl: 用法示例: journalctl -u nginx --since today");return 1}
+  ctx.out.push("-- Logs begin at "+nowStr()+", end at "+nowStr()+". --");
+  ctx.out.push(nowStr()+" cloudlab systemd[1]: Starting nginx - a high performance web server...");
+  ctx.out.push(nowStr()+" cloudlab nginx[601]: nginx: configuration file /etc/nginx/nginx.conf test is successful");
+  ctx.out.push(nowStr()+" cloudlab systemd[1]: Started nginx - a high performance web server.");
+  return 0;
+});
+/* ================= Docker ================= */
+function defaultDocker(){
+  return {
+    images:[
+      {id:"e6bb50a0a50e",repo:"nginx",tag:"latest",size:"187MB",created:"2 周前",digest:"sha256:"+rndHex(64)},
+      {id:"c3f7e4b2a1d8",repo:"redis",tag:"7.2",size:"117MB",created:"3 周前",digest:"sha256:"+rndHex(64)},
+      {id:"8a5d2c9f1b4e",repo:"mysql",tag:"8.0",size:"587MB",created:"4 周前",digest:"sha256:"+rndHex(64)},
+      {id:"9f7e6d5c4b3a",repo:"alpine",tag:"latest",size:"7.35MB",created:"1 个月前",digest:"sha256:"+rndHex(64)},
+      {id:"2b4d6f8a0c1e",repo:"ubuntu",tag:"22.04",size:"78MB",created:"2 个月前",digest:"sha256:"+rndHex(64)}
+    ],
+    containers:[
+      {id:"a1b2c3d4e5f6",name:"web",image:"nginx",status:"Up 5 days",ports:"0.0.0.0:8080->80/tcp",created:Date.now()-5*864e5},
+      {id:"f6e5d4c3b2a1",name:"redis-cache",image:"redis:7.2",status:"Up 3 days",ports:"6379/tcp",created:Date.now()-3*864e5},
+      {id:"1a2b3c4d5e6f",name:"db",image:"mysql:8.0",status:"Exited (0) 2 days ago",ports:"0.0.0.0:3306->3306/tcp",created:Date.now()-7*864e5}
+    ],
+    networks:[
+      {id:"c9f0d1e2a3b4",name:"bridge",driver:"bridge",scope:"local"},
+      {id:"d8e9f0a1b2c3",name:"host",driver:"host",scope:"local"},
+      {id:"7a8b9c0d1e2f",name:"app-net",driver:"bridge",scope:"local"},
+      {id:"5e6f7a8b9c0d",name:"k8s-cni",driver:"bridge",scope:"local"}
+    ],
+    volumes:[
+      {name:"mysql-data",driver:"local",mount:"/var/lib/docker/volumes/mysql-data"},
+      {name:"nginx-html",driver:"local",mount:"/var/lib/docker/volumes/nginx-html"}
+    ]
+  };
+}
+function rndHex(n){var s="";for(var i=0;i<n;i++)s+="0123456789abcdef"[Math.floor(Math.random()*16)];return s}
+function cid(){return rndHex(12)}
+var D=defaultDocker();
+function loadDocker(){try{var v=localStorage.getItem(D_KEY);if(v){var o=JSON.parse(v);if(o&&o.images)return o}}catch(e){}return defaultDocker()}
+function saveDocker(){try{localStorage.setItem(D_KEY,JSON.stringify(D))}catch(e){}}
+function ageStr2(ms){return ageStr(Date.now()-ms)}
+function contStatus(c){if(c.status.indexOf("Up")===0)return c.status;return c.status}
+function findImage(spec){var tag="latest";if(spec.indexOf(":")>=0){var i=spec.lastIndexOf(":");if(spec.indexOf("/")<0||i>spec.lastIndexOf("/")){tag=spec.slice(i+1);spec=spec.slice(0,i)}}for(var i=0;i<D.images.length;i++){if(D.images[i].repo===spec&&D.images[i].tag===tag)return D.images[i]}return null}
+reg("docker",async function(ctx){
+  var a=ctx.args.slice(1),sub=a[0];
+  if(!sub){ctx.out.push("Usage:  docker [OPTIONS] COMMAND");ctx.out.push("");ctx.out.push("管理命令:");ctx.out.push("  container   管理容器");ctx.out.push("  image       管理镜像");ctx.out.push("  network     管理网络");ctx.out.push("  volume      管理卷");ctx.out.push("");ctx.out.push("命令:");ctx.out.push("  ps         列出容器");ctx.out.push("  images     列出镜像");ctx.out.push("  run        运行新容器");ctx.out.push("  exec       在运行中的容器执行命令");ctx.out.push("  logs       查看容器日志");ctx.out.push("  stop/start/restart  停止/启动/重启容器");ctx.out.push("  rm/rmi     删除容器/镜像");ctx.out.push("  pull/push  拉取/推送镜像");ctx.out.push("  build      构建镜像");ctx.out.push("  network/volume 网络/卷管理");ctx.out.push("  inspect/stats/top  检查/资源/进程");ctx.out.push("  version/info 版本/信息");return 0}
+  if(sub==="ps"){
+    var all=false;
+    for(var i=1;i<a.length;i++){if(a[i]==="-a"||a[i]==="--all")all=true}
+    if(!all)D.containers=D.containers.filter(function(c){return c.status.indexOf("Up")===0});
+    ctx.out.push("CONTAINER ID   IMAGE         COMMAND                  CREATED      STATUS              PORTS                    NAMES");
+    D.containers.forEach(function(c){
+      ctx.out.push(c.id+"   "+padStr(c.image,12)+" \"/bin/bash\"            "+ageStr2(c.created).padStart(6)+"   "+padStr(c.status,18)+" "+padStr(c.ports,20)+" "+c.name);
+    });
+    return 0}
+  if(sub==="images"){ctx.out.push("REPOSITORY   TAG       IMAGE ID       CREATED       SIZE");D.images.forEach(function(i){ctx.out.push(padStr(i.repo,10)+"  "+padStr(i.tag,7)+"  "+i.id+"   "+i.created+"   "+i.size)});return 0}
+  if(sub==="run"){
+    var name=null,detach=false,ports=[],envs=[],vols=[],rm=false,restart="no",image=null,cmd=[];
+    for(var i=1;i<a.length;i++){
+      var t=a[i];
+      if(t==="-d")detach=true;
+      else if(t==="-it"||t==="-i"||t==="-t"){}
+      else if(t==="--rm")rm=true;
+      else if(t==="--name")name=a[++i];
+      else if(t==="-p")ports.push(a[++i]);
+      else if(t==="-e")envs.push(a[++i]);
+      else if(t==="-v")vols.push(a[++i]);
+      else if(t==="--restart")restart=a[++i];
+      else if(t[0]==="-")continue;
+      else if(!image)image=t;
+      else cmd.push(t);
+    }
+    if(!image){ctx.err.push("docker: \"docker run\" requires at least 1 argument.");return 1}
+    var img=findImage(image);
+    if(!img){ctx.err.push("docker: Error response from daemon: pull access denied for "+image+", repository does not exist or may require 'docker login'（模拟镜像池: nginx / redis:7.2 / mysql:8.0 / alpine / ubuntu:22.04）");return 1}
+    var c={id:cid(),name:name||(image.replace(/[^a-z0-9]/g,"")+"_"+rndHex(4)),image:image,status:detach?"Up 1 second":"Up 1 second",ports:ports.join(", ")||"",created:Date.now(),env:envs,vols:vols,rm:rm};
+    D.containers.push(c);
+    ctx.out.push(c.id);
+    if(!detach)ctx.out.push("（已创建容器 "+c.name+"，模拟环境未附加交互终端）");
+    saveDocker();return 0}
+  if(sub==="exec"){
+    var name=null,cmd=[],interactive=false;
+    for(var i=1;i<a.length;i++){if(a[i]==="-it")interactive=true;else if(a[i]==="-i"||a[i]==="-t"){}else if(a[i]==="--"){cmd=a.slice(i+1);break}else if(!name)name=a[i]}
+    if(!name){ctx.err.push("docker: exec requires at least 2 arguments");return 1}
+    var c=D.containers.find(function(x){return x.name===name||x.id.indexOf(name)===0});
+    if(!c||c.status.indexOf("Up")<0){ctx.err.push("docker: Error response from daemon: Container "+name+" is not running");return 1}
+    if(!cmd.length)cmd=["/bin/bash"];
+    ctx.out.push("root@"+c.name+":/#  （模拟 exec 环境）");
+    if(cmd[0]==="ls"||cmd[0]==="bash"||cmd[0]==="-it"){ctx.out.push("bin  dev  etc  home  lib  media  mnt  opt  proc  root  run  sbin  srv  sys  tmp  usr  var");return 0}
+    if(cmd[0]==="cat"){ctx.out.push("（容器 "+c.name+" 内的文件内容模拟）");return 0}
+    if(cmd[0]==="env"){ctx.out.push("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");ctx.out.push("HOSTNAME="+c.name);c.env.forEach(function(e){ctx.out.push(e)});return 0}
+    if(cmd[0]==="whoami"){ctx.out.push("root");return 0}
+    if(cmd[0]==="pwd"){ctx.out.push("/");return 0}
+    ctx.out.push("（已执行: "+cmd.join(" ")+"）");
+    return 0}
+  if(sub==="logs"){
+    var name=null,lines=0,follow=false;
+    for(var i=1;i<a.length;i++){if(a[i]==="-f"||a[i]==="--follow")follow=true;else if(a[i]=="-n"||a[i]=="--tail"){lines=parseInt(a[++i])||10;lines=0}else if(a[i]==="--tail"){a[i+1];i++}else if(a[i][0]==="-")continue;else name=a[i]}
+    var c=D.containers.find(function(x){return x.name===name||x.id.indexOf(name)===0});
+    if(!c){ctx.err.push("docker: Error: No such container: "+name);return 1}
+    if(c.image.indexOf("nginx")===0){
+      ctx.out.push("/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration");
+      ctx.out.push("/docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/");
+      ctx.out.push("/docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh");
+      ctx.out.push("10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf");
+      ctx.out.push("10-listen-on-ipv6-by-default.sh: info: /etc/nginx/conf.d/default.conf differs from the packaged version");
+      ctx.out.push("/docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh");
+      ctx.out.push("/docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh");
+      ctx.out.push("[notice] 1#1: using the \"epoll\" event method");
+      ctx.out.push("[notice] 1#1: nginx/1.24.0");
+      ctx.out.push("[notice] 1#1: start worker processes");
+      return 0}
+    if(c.image.indexOf("redis")===0){
+      ctx.out.push("1:C 10 Sep 2026 10:00:00.000 * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo");
+      ctx.out.push("1:C 10 Sep 2026 10:00:00.000 * Redis version=7.2.4, bits=64, commit=00000000, modified=0, pid=1, just started");
+      ctx.out.push("1:M 10 Sep 2026 10:00:00.000 * Ready to accept connections tcp");
+      return 0}
+    ctx.out.push("（容器 "+c.name+" 的日志模拟）");
+    if(follow)ctx.out.push("（日志跟随模拟，输入新命令可继续）");
+    return 0}
+  if(sub==="stop"||sub==="start"||sub==="restart"){
+    var ok=false;
+    for(var i=1;i<a.length;i++){
+      var c=D.containers.find(function(x){return x.name===a[i]||x.id.indexOf(a[i])===0});
+      if(!c){ctx.err.push("docker: Error: No such container: "+a[i]);continue}
+      if(sub==="stop"){c.status="Exited (0) 1 second ago";ctx.out.push(a[i])}
+      if(sub==="start"){c.status="Up 1 second";ctx.out.push(a[i])}
+      if(sub==="restart"){c.status="Up 1 second";ctx.out.push(a[i])}
+      ok=true;
+    }
+    saveDocker();return ok?0:1}
+  if(sub==="rm"){
+    var force=false,ok=false;
+    for(var i=1;i<a.length;i++){if(a[i]==="-f"||a[i]==="--force")force=true;else{var idx=D.containers.findIndex(function(x){return x.name===a[i]||x.id.indexOf(a[i])===0});if(idx<0){ctx.err.push("docker: Error: No such container: "+a[i]);continue}if(D.containers[idx].status.indexOf("Up")===0&&!force){ctx.err.push("docker: Error response from daemon: You cannot remove a running container "+a[i]+". Stop the container before attempting removal or force remove");continue}D.containers.splice(idx,1);ctx.out.push(a[i]);ok=true}}
+    saveDocker();return ok?0:1}
+  if(sub==="rmi"){
+    var ok=false;
+    for(var i=1;i<a.length;i++){
+      var spec=a[i].split(":")[0];
+      var idx=D.images.findIndex(function(x){return x.repo===spec});
+      if(idx<0){ctx.err.push("docker: Error: No such image: "+a[i]);continue}
+      var used=D.containers.some(function(c){return c.image.split(":")[0]===spec});
+      if(used){ctx.err.push("docker: Error response from daemon: conflict: unable to remove repository reference \""+spec+"\" (must force) - container "+D.containers.find(function(c){return c.image.split(":")[0]===spec}).name+" is using its referenced image");continue}
+      D.images.splice(idx,1);ctx.out.push("Untagged: "+spec+":latest");ctx.out.push("Deleted: sha256:"+rndHex(64));ok=true;
+    }
+    saveDocker();return ok?0:1}
+  if(sub==="pull"){
+    var spec=a[1];
+    if(!spec){ctx.err.push("docker pull requires exactly 1 argument");return 1}
+    var repo=spec.split(":")[0];
+    var img=findImage(spec);
+    if(!img){img={id:cid(),repo:repo,tag:spec.split(":")[1]||"latest",size:(Math.random()*300).toFixed(0)+"MB",created:"刚刚",digest:"sha256:"+rndHex(64)};D.images.push(img)}
+    ctx.out.push("Using default tag: "+spec.split(":")[1]||"latest");
+    ctx.out.push(spec+":latest");
+    ctx.out.push("Pulling from library/"+repo);
+    ctx.out.push("Digest: sha256:"+rndHex(64));
+    ctx.out.push("Status: Downloaded newer image for "+spec);
+    saveDocker();return 0}
+  if(sub==="build"){
+    var tag=null;
+    for(var i=1;i<a.length;i++){if(a[i]==="-t"||a[i]==="--tag")tag=a[++i];else if(a[i][0]==="-")continue}
+    var name=tag||"myapp:latest";
+    ctx.out.push("DEPRECATED: The legacy builder is deprecated and will be removed in a future release.");
+    ctx.out.push("Step 1/3 : FROM nginx:alpine");
+    ctx.out.push(" ---> e6bb50a0a50e");
+    ctx.out.push("Step 2/3 : COPY index.html /usr/share/nginx/html/");
+    ctx.out.push(" ---> 9a8b7c6d5e4f");
+    ctx.out.push("Step 3/3 : EXPOSE 80");
+    ctx.out.push(" ---> Running in "+cid());
+    ctx.out.push("Removing intermediate container "+cid());
+    ctx.out.push(" ---> 1f2e3d4c5b6a");
+    ctx.out.push("Successfully built 1f2e3d4c5b6a");
+    ctx.out.push("Successfully tagged "+name);
+    var img={id:"1f2e3d4c5b6a",repo:name.split(":")[0],tag:name.split(":")[1]||"latest",size:"156MB",created:"刚刚",digest:"sha256:"+rndHex(64)};
+    D.images.unshift(img);saveDocker();return 0}
+  if(sub==="network"){
+    var nsub=a[1];
+    if(nsub==="ls"||!nsub){ctx.out.push("NETWORK ID     NAME      DRIVER    SCOPE");D.networks.forEach(function(n){ctx.out.push(n.id+"   "+padStr(n.name,8)+"  "+padStr(n.driver,8)+"  "+n.scope)});return 0}
+    if(nsub==="create"){var nm=a[2]||("net_"+rndHex(4));D.networks.push({id:cid(),name:nm,driver:a.indexOf("-d")>=0?a[a.indexOf("-d")+1]:"bridge",scope:"local"});ctx.out.push(nm);saveDocker();return 0}
+    if(nsub==="rm"){var ok=false;for(var i=2;i<a.length;i++){var idx=D.networks.findIndex(function(n){return n.name===a[i]});if(idx<0){ctx.err.push("Error: No such network: "+a[i]);continue}D.networks.splice(idx,1);ctx.out.push(a[i]);ok=true}saveDocker();return ok?0:1}
+    if(nsub==="inspect"){var nm=a[2];var n=D.networks.find(function(x){return x.name===nm});if(!n){ctx.err.push("Error: No such network: "+nm);return 1}ctx.out.push("[\n    {\n        \"Name\": \""+n.name+"\",\n        \"Driver\": \""+n.driver+"\",\n        \"Scope\": \""+n.scope+"\",\n        \"Containers\": {}\n    }\n]");return 0}
+    ctx.err.push("docker network: 支持 ls / create / rm / inspect");
+    return 1}
+  if(sub==="volume"){
+    var nsub=a[1];
+    if(nsub==="ls"||!nsub){ctx.out.push("DRIVER    VOLUME NAME");D.volumes.forEach(function(v){ctx.out.push(v.driver+"    "+v.name)});return 0}
+    if(nsub==="create"){var nm=a[2]||rndHex(4);D.volumes.push({name:nm,driver:"local",mount:"/var/lib/docker/volumes/"+nm});ctx.out.push(nm);saveDocker();return 0}
+    if(nsub==="rm"){var ok=false;for(var i=2;i<a.length;i++){var idx=D.volumes.findIndex(function(v){return v.name===a[i]});if(idx<0){ctx.err.push("Error: No such volume: "+a[i]);continue}D.volumes.splice(idx,1);ctx.out.push(a[i]);ok=true}saveDocker();return ok?0:1}
+    if(nsub==="inspect"){var nm=a[2];var v=D.volumes.find(function(x){return x.name===nm});if(!v){ctx.err.push("Error: No such volume: "+nm);return 1}ctx.out.push("[\n    {\n        \"Name\": \""+v.name+"\",\n        \"Driver\": \""+v.driver+"\",\n        \"Mountpoint\": \""+v.mount+"\"\n    }\n]");return 0}
+    ctx.err.push("docker volume: 支持 ls / create / rm / inspect");
+    return 1}
+  if(sub==="inspect"){
+    var name=a[1];
+    var c=D.containers.find(function(x){return x.name===name||x.id.indexOf(name)===0});
+    if(!c){ctx.err.push("docker: Error: No such object: "+name);return 1}
+    ctx.out.push("[\n    {\n        \"Id\": \""+c.id+"\",\n        \"Name\": \"/"+c.name+"\",\n        \"Image\": \""+c.image+"\",\n        \"State\": { \"Status\": \""+(c.status.indexOf("Up")===0?"running":"exited")+"\", \"Running\": "+(c.status.indexOf("Up")===0)+" },\n        \"NetworkSettings\": { \"Ports\": { \""+c.ports+"\": null } },\n        \"Mounts\": [\n"+(c.vols||[]).map(function(v){return "            { \"Type\": \"volume\", \"Source\": \""+v.split(":")[0]+"\", \"Destination\": \""+v.split(":")[1]+"\" }"}).join(",\n")+"\n        ]\n    }\n]");
+    return 0}
+  if(sub==="stats"){
+    ctx.out.push("CONTAINER ID   NAME         CPU %     MEM USAGE / LIMIT     MEM %     NET I/O          BLOCK I/O");
+    D.containers.filter(function(c){return c.status.indexOf("Up")===0}).forEach(function(c){
+      var cpu=(Math.random()*3).toFixed(2),mem=(Math.random()*500+20).toFixed(1),pct=(mem/8192*100).toFixed(2);
+      ctx.out.push(c.id+"   "+padStr(c.name,10)+"  "+padStr(cpu+"%",9)+" "+padStr(mem+"MiB / 8GiB",22)+" "+padStr(pct+"%",7)+" "+padStr((Math.random()*5).toFixed(2)+"kB / "+(Math.random()*3).toFixed(2)+"kB",18)+" "+(Math.random()*2).toFixed(1)+"MB / 0B");
+    });
+    ctx.out.push("（静态快照模拟）");
+    return 0}
+  if(sub==="top"){ctx.out.push("UID     PID     PPID    C   STIME   TTY     TIME    CMD");ctx.out.push("root    "+String(1000+Math.floor(Math.random()*9000))+"     1   0.0   09:55   pts/0   00:00:00  /bin/bash");return 0}
+  if(sub==="version"){ctx.out.push("Client: Docker Engine - Community\n Version:    27.3.1\n API version: 1.47\nServer: Docker Engine - Community\n Engine:\n  Version:    27.3.1\n  API version: 1.47 (minimum version 1.24)\n  Go version:  go1.22.7");return 0}
+  if(sub==="info"){ctx.out.push("Client: Docker Engine - Community\n Server:\n  Containers: "+D.containers.length+"\n   Running: "+D.containers.filter(function(c){return c.status.indexOf("Up")===0}).length+"\n   Paused: 0\n   Stopped: "+D.containers.filter(function(c){return c.status.indexOf("Up")<0}).length+"\n  Images: "+D.images.length+"\n  Server Version: 27.3.1\n  Storage Driver: overlay2\n  Logging Driver: json-file\n  Cgroup Driver: systemd\n  Plugins:\n   Volume: local\n   Network: bridge host ipvlan macvlan null overlay\n  Swarm: inactive\n  Runtimes: io.containerd.runc.v2 runc");return 0}
+  if(sub==="login"){ctx.out.push("Login Succeeded");return 0}
+  if(sub==="push"){ctx.out.push("The push refers to repository ["+a[1]+"]");ctx.out.push("latest: digest: sha256:"+rndHex(64)+" size: 2419");return 0}
+  if(sub==="compose"){ctx.out.push("docker compose: 模拟器暂不内置 Compose，建议逐条练习 docker run / network / volume。");return 0}
+  ctx.err.push("docker: '"+sub+"' 未在模拟器实现，可用: ps / images / run / exec / logs / stop / start / restart / rm / rmi / pull / build / network / volume / inspect / stats / top / version / info");
+  return 1;
+},"Docker 容器管理");
+/* ================= Kubernetes ================= */
+function defaultK8s(){
+  var now=Date.now();
+  return {
+    currentContext:"kubernetes-admin@kubernetes",
+    contexts:[
+      {name:"kubernetes-admin@kubernetes",cluster:"kubernetes",user:"kubernetes-admin",ns:"default"},
+      {name:"dev-context",cluster:"kubernetes",user:"dev",ns:"dev"}
+    ],
+    nodes:[
+      {name:"node-01",status:"Ready",roles:"control-plane,master",version:"v1.30.2",ip:"10.0.0.11",os:"Ubuntu 22.04.4 LTS",created:now-180*864e5},
+      {name:"node-02",status:"Ready",roles:"<none>",version:"v1.30.2",ip:"10.0.0.12",os:"Ubuntu 22.04.4 LTS",created:now-178*864e5},
+      {name:"node-03",status:"Ready",roles:"<none>",version:"v1.30.2",ip:"10.0.0.13",os:"Ubuntu 22.04.4 LTS",created:now-178*864e5}
+    ],
+    namespaces:["default","kube-system","kube-public","kube-node-lease","monitoring","dev","prod"],
+    pods:{
+      default:[
+        mkPod("nginx-deployment",now-5*864e5),
+        mkPod("nginx-deployment",now-5*864e5),
+        mkPod("nginx-deployment",now-5*864e5),
+        mkPod("redis",now-3*864e5),
+        {name:"redis-client",ns:"default",ready:"1/1",status:"Running",restarts:0,created:now-3*864e5,ip:"10.244.1.7",node:"node-02",owner:"",image:"redis:7.2"}
+      ],
+      "kube-system":[
+        {name:"coredns-76f75df455-abc12",ns:"kube-system",ready:"1/1",status:"Running",restarts:0,created:now-180*864e5,ip:"10.244.0.2",node:"node-01",owner:"coredns",image:"registry.k8s.io/coredns/coredns:v1.11.1"},
+        {name:"coredns-76f75df455-def34",ns:"kube-system",ready:"1/1",status:"Running",restarts:0,created:now-180*864e5,ip:"10.244.0.3",node:"node-01",owner:"coredns",image:"registry.k8s.io/coredns/coredns:v1.11.1"},
+        {name:"etcd-node-01",ns:"kube-system",ready:"1/1",status:"Running",restarts:1,created:now-180*864e5,ip:"10.0.0.11",node:"node-01",owner:"",image:"registry.k8s.io/etcd:3.5.12-0"},
+        {name:"kube-apiserver-node-01",ns:"kube-system",ready:"1/1",status:"Running",restarts:0,created:now-180*864e5,ip:"10.0.0.11",node:"node-01",owner:"",image:"registry.k8s.io/kube-apiserver:v1.30.2"},
+        {name:"kube-controller-manager-node-01",ns:"kube-system",ready:"1/1",status:"Running",restarts:0,created:now-180*864e5,ip:"10.0.0.11",node:"node-01",owner:"",image:"registry.k8s.io/kube-controller-manager:v1.30.2"},
+        {name:"kube-proxy-xyz78",ns:"kube-system",ready:"1/1",status:"Running",restarts:0,created:now-180*864e5,ip:"10.244.0.4",node:"node-01",owner:"kube-proxy",image:"registry.k8s.io/kube-proxy:v1.30.2"},
+        {name:"kube-scheduler-node-01",ns:"kube-system",ready:"1/1",status:"Running",restarts:0,created:now-180*864e5,ip:"10.0.0.11",node:"node-01",owner:"",image:"registry.k8s.io/kube-scheduler:v1.30.2"}
+      ],
+      monitoring:[
+        {name:"prometheus-7b6f9c4d5e-gg123",ns:"monitoring",ready:"1/1",status:"Running",restarts:0,created:now-20*864e5,ip:"10.244.2.5",node:"node-02",owner:"prometheus",image:"prom/prometheus:v2.52.0"},
+        {name:"grafana-6d4f7b8c9a-qwer2",ns:"monitoring",ready:"1/1",status:"Running",restarts:0,created:now-20*864e5,ip:"10.244.2.6",node:"node-02",owner:"grafana",image:"grafana/grafana:11.0.0"}
+      ]
+    },
+    deployments:{
+      default:[
+        {name:"nginx-deployment",ns:"default",image:"nginx:1.24",replicas:3,ready:3,updated:3,available:3,created:now-5*864e5,selector:"app=nginx"},
+        {name:"redis",ns:"default",image:"redis:7.2",replicas:1,ready:1,updated:1,available:1,created:now-3*864e5,selector:"app=redis"}
+      ],
+      "kube-system":[
+        {name:"coredns",ns:"kube-system",image:"registry.k8s.io/coredns/coredns:v1.11.1",replicas:2,ready:2,updated:2,available:2,created:now-180*864e5,selector:"k8s-app=kube-dns"}
+      ],
+      monitoring:[
+        {name:"prometheus",ns:"monitoring",image:"prom/prometheus:v2.52.0",replicas:1,ready:1,updated:1,available:1,created:now-20*864e5,selector:"app=prometheus"},
+        {name:"grafana",ns:"monitoring",image:"grafana/grafana:11.0.0",replicas:1,ready:1,updated:1,available:1,created:now-20*864e5,selector:"app=grafana"}
+      ]
+    },
+    services:{
+      default:[
+        {name:"nginx-svc",ns:"default",type:"ClusterIP",clusterIP:"10.96.0.10",externalIP:"<none>",ports:"80/TCP",selector:"app=nginx",created:now-5*864e5},
+        {name:"redis-svc",ns:"default",type:"ClusterIP",clusterIP:"10.96.0.11",externalIP:"<none>",ports:"6379/TCP",selector:"app=redis",created:now-3*864e5}
+      ],
+      "kube-system":[
+        {name:"kube-dns",ns:"kube-system",type:"ClusterIP",clusterIP:"10.96.0.10",externalIP:"<none>",ports:"53/UDP,53/TCP,9153/TCP",selector:"k8s-app=kube-dns",created:now-180*864e5}
+      ],
+      monitoring:[
+        {name:"prometheus-svc",ns:"monitoring",type:"ClusterIP",clusterIP:"10.96.0.20",externalIP:"<none>",ports:"9090/TCP",selector:"app=prometheus",created:now-20*864e5},
+        {name:"grafana-svc",ns:"monitoring",type:"NodePort",clusterIP:"10.96.0.21",externalIP:"<none>",ports:"3000:32000/TCP",selector:"app=grafana",created:now-20*864e5}
+      ]
+    },
+    configmaps:{
+      default:[{name:"app-config",ns:"default",data:{APP_ENV:"production",LOG_LEVEL:"info"},created:now-10*864e5}],
+      "kube-system":[{name:"kubeadm-config",ns:"kube-system",data:{ClusterConfiguration:"apiServer:\n  extraArgs:\n    authorization-mode: Node,RBAC\n"},created:now-180*864e5}]
+    },
+    secrets:{
+      default:[{name:"mysql-secret",ns:"default",type:"Opaque",data:{MYSQL_ROOT_PASSWORD:"bXlwYXNzd29yZA==",MYSQL_USER:"YXBw"},created:now-6*864e5}]
+    },
+    pv:[
+      {name:"pv-data",capacity:"10Gi",access:"RWO,RWX",reclaim:"Retain",status:"Bound",claim:"default/data-pvc",sc:"standard",created:now-30*864e5},
+      {name:"pv-logs",capacity:"20Gi",access:"RWO",reclaim:"Recycle",status:"Available",claim:"",sc:"standard",created:now-30*864e5}
+    ],
+    pvc:{
+      default:[{name:"data-pvc",ns:"default",status:"Bound",volume:"pv-data",capacity:"10Gi",access:"RWO",sc:"standard",created:now-29*864e5}]
+    },
+    ingresses:{
+      default:[{name:"nginx-ingress",ns:"default",class:"nginx",hosts:"app.example.com",address:"10.0.0.11",ports:80,created:now-4*864e5}]
+    },
+    statefulsets:{default:[{name:"mysql-sts",ns:"default",image:"mysql:8.0",replicas:1,ready:1,created:now-6*864e5}]},
+    daemonsets:{"kube-system":[{name:"kube-proxy",ns:"kube-system",desired:3,current:3,ready:3,created:now-180*864e5}]},
+    jobs:{default:[]},
+    cronjobs:{default:[{name:"backup-job",ns:"default",schedule:"0 2 * * *",suspend:false,active:0,lastScheduled:"2026-09-09T02:00:00Z",created:now-12*864e5}]},
+    events:[
+      {type:"Normal",reason:"Scheduled",obj:"pod/nginx-deployment-7c5c9d6f5b-abc12",message:"Successfully assigned default/nginx-deployment-7c5c9d6f5b-abc12 to node-02",count:1,created:now-5*864e5},
+      {type:"Normal",reason:"Pulled",obj:"pod/nginx-deployment-7c5c9d6f5b-abc12",message:"Container image \"nginx:1.24\" already present on machine",count:1,created:now-5*864e5},
+      {type:"Normal",reason:"Created",obj:"pod/nginx-deployment-7c5c9d6f5b-abc12",message:"Created container nginx",count:1,created:now-5*864e5},
+      {type:"Normal",reason:"Started",obj:"pod/nginx-deployment-7c5c9d6f5b-abc12",message:"Started container nginx",count:1,created:now-5*864e5}
+    ]
+  };
+}
+var podSeq=0;
+function mkPod(owner,created){
+  podSeq++;
+  var imgs={nginx:"nginx:1.24",redis:"redis:7.2",coredns:"registry.k8s.io/coredns/coredns:v1.11.1",prometheus:"prom/prometheus:v2.52.0",grafana:"grafana/grafana:11.0.0"};
+  var hash1=rndHex(5),hash2=rndHex(5);
+  return {name:owner+"-"+hash1+"-"+hash2,ns:"default",ready:"1/1",status:"Running",restarts:0,created:created,ip:"10.244."+(1+Math.floor(Math.random()*10))+"."+(2+Math.floor(Math.random()*250)),node:"node-0"+(1+Math.floor(Math.random()*3)),owner:owner,image:imgs[owner]||"nginx:1.24"};
+}
+function getNsArr(obj,ns){if(!obj[ns])obj[ns]=[];return obj[ns]}
+function findDep(ns,name){var a=getNsArr(K.deployments,ns);for(var i=0;i<a.length;i++)if(a[i].name===name)return a[i];return null}
+function syncPodsForDeploy(dep){
+  var pods=getNsArr(K.pods,dep.ns);
+  var mine=pods.filter(function(p){return p.owner===dep.name});
+  while(mine.length<dep.replicas){
+    var p=mkPod(dep.name,Date.now());p.ns=dep.ns;p.image=dep.image;
+    pods.push(p);mine.push(p);
+  }
+  while(mine.length>dep.replicas){
+    var i=pods.indexOf(mine[mine.length-1]);if(i>=0)pods.splice(i,1);mine.pop();
+  }
+  dep.ready=Math.min(mine.length,dep.replicas);dep.available=dep.ready;dep.updated=dep.replicas;
+  saveK8s();
+}
+function rndSuffix(){return rndHex(5)}
+var K=defaultK8s();
+function loadK8s(){try{var v=localStorage.getItem(K_KEY);if(v){var o=JSON.parse(v);if(o&&o.nodes)return o}}catch(e){}return defaultK8s()}
+function saveK8s(){try{localStorage.setItem(K_KEY,JSON.stringify(K))}catch(e){}}
+var RES_TYPES={pod:["pods","pod"],deployment:["deployments","deploy","deployment"],service:["services","svc","service"],node:["nodes","no","node"],namespace:["namespaces","ns","namespace"],configmap:["configmaps","cm","configmap"],secret:["secrets","secret"],pv:["pv","persistentvolumes"],pvc:["pvc","persistentvolumeclaims"],ingress:["ingresses","ing","ingress"],statefulset:["statefulsets","sts","statefulset"],daemonset:["daemonsets","ds","daemonset"],job:["jobs","job"],cronjob:["cronjobs","cj","cronjob"],event:["events","ev","event"],all:["all"]};
+function normRes(r){var lr=(r||"").toLowerCase();var keys=Object.keys(RES_TYPES);for(var i=0;i<keys.length;i++){if(RES_TYPES[keys[i]].indexOf(lr)>=0)return keys[i]}return null}
+function ageCol(t){return ageStr(Date.now()-t)}
+function yamlOf(obj,indent){
+  var ind=" ".repeat(indent||0);var out=[];
+  Object.keys(obj).forEach(function(k){
+    var v=obj[k];
+    if(v===null||v===undefined)out.push(ind+k+": null");
+    else if(typeof v==="object"){
+      if(Array.isArray(v)){out.push(ind+k+":");v.forEach(function(it){if(typeof it==="object"){out.push(ind+"  -");Object.keys(it).forEach(function(ik){out.push(ind+"    "+ik+": "+(typeof it[ik]==="object"?JSON.stringify(it[ik]):it[ik]))})}else out.push(ind+"  - "+it)})}
+      else if(Object.keys(v).length){out.push(ind+k+":");out.push(yamlOf(v,indent+2))}
+      else out.push(ind+k+": {}");
+    }
+    else out.push(ind+k+": "+v);
+  });
+  return out.join("\n");
+}
+function podYaml(p){
+  return "apiVersion: v1\nkind: Pod\nmetadata:\n  name: "+p.name+"\n  namespace: "+p.ns+"\n  labels:\n    app: "+(p.owner||"demo")+"\nspec:\n  containers:\n  - name: "+(p.owner||"demo")+"\n    image: "+p.image+"\n    imagePullPolicy: IfNotPresent\n  nodeName: "+p.node+"\nstatus:\n  phase: Running\n  podIP: "+p.ip+"\n";
+}
+function depYaml(d){
+  return "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: "+d.name+"\n  namespace: "+d.ns+"\n  labels:\n    app: "+d.selector.split("=")[1]+"\nspec:\n  replicas: "+d.replicas+"\n  selector:\n    matchLabels:\n      app: "+d.selector.split("=")[1]+"\n  template:\n    metadata:\n      labels:\n        app: "+d.selector.split("=")[1]+"\n    spec:\n      containers:\n      - name: "+d.name+"\n        image: "+d.image+"\n        ports:\n        - containerPort: 80\n";
+}
+function svcYaml(s){
+  return "apiVersion: v1\nkind: Service\nmetadata:\n  name: "+s.name+"\n  namespace: "+s.ns+"\nspec:\n  selector:\n    "+s.selector+"\n  ports:\n  - protocol: TCP\n    port: "+s.ports.split("/")[0]+"\n  type: "+s.type+"\n";
+}
+function kGetTable(ctx,res,ns,allNs,outFmt){
+  var rows=[];
+  function line(p){rows.push(p)}
+  var k;
+  function fmtAge(t){return ageCol(t)}
+  if(res==="node"){
+    if(!allNs)line("NAME      STATUS   ROLES                  AGE    VERSION");
+    K.nodes.forEach(function(n){line(n.name+"   "+n.status+"    "+padStr(n.roles,20)+" "+fmtAge(n.created).padStart(6)+"  "+n.version)});
+  }
+  else if(res==="namespace"){
+    line("NAME              STATUS   AGE");
+    K.namespaces.forEach(function(nm){
+      var age=nm==="default"?180*864e5:nm==="kube-system"?180*864e5:30*864e5;
+      line(padStr(nm,16)+"   Active   "+fmtAge(age));
+    });
+  }
+  else if(res==="pod"){
+    line("NAME                                        READY   STATUS    RESTARTS   AGE"+(outFmt==="wide"?"   IP             NODE     NOMINATED NODE   READINESS GATES":""));
+    var nsList=allNs?Object.keys(K.pods):[ns];
+    nsList.forEach(function(n2){
+      getNsArr(K.pods,n2).forEach(function(p){
+        line(padStr(p.name,42)+(allNs?"  "+padStr(p.ns,12):"")+"   "+p.ready+"   "+padStr(p.status,9)+"  "+p.restarts+"        "+fmtAge(p.created).padStart(5)+(outFmt==="wide"?"   "+padStr(p.ip,14)+" "+padStr(p.node,9)+"   <none>           <none>":""));
+      });
+    });
+  }
+  else if(res==="deployment"){
+    line("NAME              READY   UP-TO-DATE   AVAILABLE   AGE    CONTAINERS        IMAGES       SELECTOR");
+    var nsList=allNs?Object.keys(K.deployments):[ns];
+    nsList.forEach(function(n2){
+      getNsArr(K.deployments,n2).forEach(function(d){
+        line(padStr(d.name,16)+"   "+d.ready+"/"+d.replicas+"     "+d.updated+"           "+d.available+"        "+fmtAge(d.created).padStart(5)+"   "+padStr(d.name,14)+"  "+padStr(d.image,12)+"  "+d.selector);
+      });
+    });
+  }
+  else if(res==="service"){
+    line("NAME            TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)        AGE");
+    var nsList=allNs?Object.keys(K.services):[ns];
+    nsList.forEach(function(n2){
+      getNsArr(K.services,n2).forEach(function(s){
+        line(padStr(s.name,14)+"  "+padStr(s.type,10)+"  "+s.clusterIP+"  "+padStr(s.externalIP,12)+" "+padStr(s.ports,13)+" "+fmtAge(s.created).padStart(5));
+      });
+    });
+  }
+  else if(res==="configmap"){
+    line("NAME              DATA   AGE");
+    var nsList=allNs?Object.keys(K.configmaps):[ns];
+    nsList.forEach(function(n2){getNsArr(K.configmaps,n2).forEach(function(c){line(padStr(c.name,16)+"   "+Object.keys(c.data||{}).length+"     "+fmtAge(c.created).padStart(5))})});
+  }
+  else if(res==="secret"){
+    line("NAME              TYPE     DATA   AGE");
+    var nsList=allNs?Object.keys(K.secrets):[ns];
+    nsList.forEach(function(n2){getNsArr(K.secrets,n2).forEach(function(c){line(padStr(c.name,16)+"  "+padStr(c.type,8)+" "+Object.keys(c.data||{}).length+"     "+fmtAge(c.created).padStart(5))})});
+  }
+  else if(res==="pv"){
+    line("NAME      CAPACITY   ACCESS MODES   RECLAIM POLICY   STATUS     CLAIM              STORAGECLASS   REASON   AGE");
+    K.pv.forEach(function(p){line(padStr(p.name,8)+"  "+padStr(p.capacity,9)+"  "+padStr(p.access,13)+"  "+padStr(p.reclaim,15)+"  "+padStr(p.status,9)+"  "+padStr(p.claim||"",16)+"  "+padStr(p.sc,13)+"          "+fmtAge(p.created).padStart(5))});
+  }
+  else if(res==="pvc"){
+    line("NAME        STATUS     VOLUME     CAPACITY   ACCESS MODES   STORAGECLASS   AGE");
+    var nsList=allNs?Object.keys(K.pvc):[ns];
+    nsList.forEach(function(n2){getNsArr(K.pvc,n2).forEach(function(p){line(padStr(p.name,10)+"  "+padStr(p.status,9)+"  "+padStr(p.volume,9)+"  "+padStr(p.capacity,9)+"  "+padStr(p.access,13)+"  "+padStr(p.sc,13)+" "+fmtAge(p.created).padStart(5))})});
+  }
+  else if(res==="ingress"){
+    line("NAME            CLASS   HOSTS             ADDRESS      PORTS   AGE");
+    var nsList=allNs?Object.keys(K.ingresses):[ns];
+    nsList.forEach(function(n2){getNsArr(K.ingresses,n2).forEach(function(i){line(padStr(i.name,14)+"  "+padStr(i.class,6)+"  "+padStr(i.hosts,16)+"  "+padStr(i.address,11)+"  "+i.ports+"       "+fmtAge(i.created).padStart(5))})});
+  }
+  else if(res==="statefulset"){
+    line("NAME          READY   AGE");
+    var nsList=allNs?Object.keys(K.statefulsets):[ns];
+    nsList.forEach(function(n2){getNsArr(K.statefulsets,n2).forEach(function(s){line(padStr(s.name,12)+"   "+s.ready+"/"+s.replicas+"   "+fmtAge(s.created).padStart(5))})});
+  }
+  else if(res==="daemonset"){
+    line("NAME         DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE");
+    var nsList=allNs?Object.keys(K.daemonsets):[ns];
+    nsList.forEach(function(n2){getNsArr(K.daemonsets,n2).forEach(function(s){line(padStr(s.name,11)+"  "+s.desired+"        "+s.current+"       "+s.ready+"     "+s.current+"           "+s.ready+"          <none>           "+fmtAge(s.created).padStart(5))})});
+  }
+  else if(res==="job"){
+    line("NAME   COMPLETIONS   DURATION   AGE");
+    var nsList=allNs?Object.keys(K.jobs):[ns];
+    nsList.forEach(function(n2){getNsArr(K.jobs,n2).forEach(function(j){line(padStr(j.name,6)+"   "+j.completions+"            "+j.duration+"        "+fmtAge(j.created).padStart(5))})});
+  }
+  else if(res==="cronjob"){
+    line("NAME          SCHEDULE    SUSPEND   ACTIVE   LAST SCHEDULE   AGE");
+    var nsList=allNs?Object.keys(K.cronjobs):[ns];
+    nsList.forEach(function(n2){getNsArr(K.cronjobs,n2).forEach(function(j){line(padStr(j.name,12)+"  "+padStr(j.schedule,10)+"  "+(j.suspend?"True":"False")+"       "+j.active+"      "+padStr(j.lastScheduled||"<none>",14)+" "+fmtAge(j.created).padStart(5))})});
+  }
+  else if(res==="event"){
+    line("LAST SEEN   TYPE      REASON     OBJECT                              MESSAGE");
+    K.events.forEach(function(e){line(fmtAge(e.created).padStart(8)+"   "+padStr(e.type,7)+"  "+padStr(e.reason,9)+"  "+padStr(e.obj,35)+" "+e.message)});
+  }
+  else if(res==="all"){
+    ctx.out.push("NAME              READY   UP-TO-DATE   AVAILABLE   AGE");
+    getNsArr(K.deployments,ns).forEach(function(d){ctx.out.push(padStr(d.name,16)+"   "+d.ready+"/"+d.replicas+"     "+d.updated+"           "+d.available+"        "+fmtAge(d.created).padStart(5))});
+    ctx.out.push("");
+    ctx.out.push("NAME            TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)        AGE");
+    getNsArr(K.services,ns).forEach(function(s){ctx.out.push(padStr(s.name,14)+"  "+padStr(s.type,10)+"  "+s.clusterIP+"  "+padStr(s.externalIP,12)+" "+padStr(s.ports,13)+" "+fmtAge(s.created).padStart(5))});
+    ctx.out.push("");
+    ctx.out.push("NAME                                        READY   STATUS    RESTARTS   AGE");
+    getNsArr(K.pods,ns).forEach(function(p){ctx.out.push(padStr(p.name,42)+"   "+p.ready+"   "+padStr(p.status,9)+"  "+p.restarts+"        "+fmtAge(p.created).padStart(5))});
+    ctx.out.push("");
+  }
+  if(outFmt==="yaml"){
+    ctx.out=[];
+    if(res==="pod")getNsArr(K.pods,ns).forEach(function(p){ctx.out.push(podYaml(p));ctx.out.push("---")});
+    else if(res==="deployment")getNsArr(K.deployments,ns).forEach(function(d){ctx.out.push(depYaml(d));ctx.out.push("---")});
+    else if(res==="service")getNsArr(K.services,ns).forEach(function(s){ctx.out.push(svcYaml(s));ctx.out.push("---")});
+    else rows.forEach(function(r){ctx.out.push(r)});
+    return 0;
+  }
+  if(outFmt==="json"){
+    ctx.out=[];
+    var data=null;
+    if(res==="node")data=K.nodes;
+    else if(res==="namespace")data=K.namespaces.map(function(nm){return {metadata:{name:nm},status:{phase:"Active"}}});
+    else if(res==="pod")data=getNsArr(K.pods,ns).map(function(p){return {apiVersion:"v1",kind:"Pod",metadata:{name:p.name,namespace:p.ns,creationTimestamp:new Date(p.created).toISOString()},spec:{containers:[{name:p.owner||"c",image:p.image}],nodeName:p.node},status:{phase:"Running",podIP:p.ip}}});
+    else if(res==="deployment")data=getNsArr(K.deployments,ns).map(function(d){return {apiVersion:"apps/v1",kind:"Deployment",metadata:{name:d.name,namespace:d.ns},spec:{replicas:d.replicas,selector:{matchLabels:{app:d.selector.split("=")[1]}},template:{spec:{containers:[{name:d.name,image:d.image}]}}}}});
+    else if(res==="service")data=getNsArr(K.services,ns).map(function(s){return {apiVersion:"v1",kind:"Service",metadata:{name:s.name,namespace:s.ns},spec:{type:s.type,clusterIP:s.clusterIP,ports:[{port:parseInt(s.ports)||80}]}}});
+    else data=rows;
+    ctx.out.push(JSON.stringify({apiVersion:"v1",kind:"List",items:data},null,2));
+    return 0;
+  }
+  rows.forEach(function(r){ctx.out.push(r)});
+  return 0;
+}
+function describePod(ctx,p){
+  ctx.out.push("Name:         "+p.name);
+  ctx.out.push("Namespace:    "+p.ns);
+  ctx.out.push("Priority:     0");
+  ctx.out.push("Node:         "+p.node+"/"+p.ip);
+  ctx.out.push("Start Time:   "+new Date(p.created).toISOString());
+  ctx.out.push("Labels:       app="+(p.owner||"demo"));
+  ctx.out.push("Status:       Running");
+  ctx.out.push("IP:           "+p.ip);
+  ctx.out.push("IPs:");
+  ctx.out.push("  IP:  "+p.ip);
+  ctx.out.push("Containers:");
+  ctx.out.push("  "+(p.owner||"c")+":");
+  ctx.out.push("    Container ID:  containerd://"+rndHex(64));
+  ctx.out.push("    Image:         "+p.image);
+  ctx.out.push("    Image ID:      docker.io/library/"+p.image+"@sha256:"+rndHex(64));
+  ctx.out.push("    Port:          <none>");
+  ctx.out.push("    Host Port:     <none>");
+  ctx.out.push("    State:          Running");
+  ctx.out.push("      Started:      "+new Date(p.created+60000).toISOString());
+  ctx.out.push("    Ready:          True");
+  ctx.out.push("    Restart Count:  "+p.restarts);
+  ctx.out.push("Conditions:");
+  ctx.out.push("  Type              Status");
+  ctx.out.push("  Initialized       True");
+  ctx.out.push("  Ready             True");
+  ctx.out.push("  ContainersReady   True");
+  ctx.out.push("  PodScheduled      True");
+  ctx.out.push("Events:");
+  ctx.out.push("  Type    Reason     Age    From               Message");
+  ctx.out.push("  ----    ------     ----   ----               -------");
+  ctx.out.push("  Normal  Scheduled  5m     default-scheduler  Successfully assigned "+p.ns+"/"+p.name+" to "+p.node);
+  ctx.out.push("  Normal  Pulled     5m     kubelet            Container image \""+p.image+"\" already present on machine");
+  ctx.out.push("  Normal  Created    5m     kubelet            Created container "+(p.owner||"c"));
+  ctx.out.push("  Normal  Started    5m     kubelet            Started container "+(p.owner||"c"));
+}
+reg("kubectl",async function(ctx){
+  var a=ctx.args.slice(1),sub=a[0];
+  if(!sub){ctx.out.push("kubectl controls the Kubernetes cluster manager.");
+    ctx.out.push("");
+    ctx.out.push("常用命令:");
+    ctx.out.push("  get        显示一个或多个资源");
+    ctx.out.push("  describe   显示资源详细信息");
+    ctx.out.push("  apply      通过文件或 stdin 应用配置");
+    ctx.out.push("  delete     删除资源");
+    ctx.out.push("  logs       打印 Pod 日志");
+    ctx.out.push("  exec       在 Pod 中执行命令");
+    ctx.out.push("  scale      扩缩容 Deployment");
+    ctx.out.push("  rollout    管理 Deployment 发布");
+    ctx.out.push("  port-forward 转发端口到 Pod/Service");
+    ctx.out.push("  version    显示客户端/服务端版本");
+    ctx.out.push("  cluster-info 显示集群信息");
+    ctx.out.push("  api-resources 列出 API 资源");
+    ctx.out.push("  config     管理 kubeconfig");
+    ctx.out.push("  explain    查看资源字段");
+    ctx.out.push("  top        显示资源使用情况");
+    ctx.out.push("");
+    ctx.out.push("提示: 输入 help k8s 查看练习示例，输入 kubectl get --help 查看用法。");
+    return 0}
+  /* 解析公共参数 */
+  var ns="default",allNs=false,outFmt="",watch=false,verbose=false;
+  var rest=[];
+  for(var i=1;i<a.length;i++){
+    var t=a[i];
+    if(t==="-n"||t==="--namespace"){ns=a[++i];continue}
+    if(t==="--all-namespaces"||t==="-A"){allNs=true;continue}
+    if(t==="-o"||t==="--output"){outFmt=a[++i];continue}
+    if(t==="-w"||t==="--watch"){watch=true;continue}
+    if(t==="-v"){verbose=true;continue}
+    if(t==="--help"||t==="-h"){ctx.out.push("用法: kubectl "+sub+" [资源] [名称] [flags]   ·  输入 help k8s 查看示例");return 0}
+    rest.push(t);
+  }
+  var res=normRes(rest[0]);
+  var name=rest[1];
+  var extra=rest.slice(2);
+  function findObjIn(type,ns2,nm){
+    if(type==="pod")return getNsArr(K.pods,ns2).find(function(x){return x.name===nm});
+    if(type==="deployment")return findDep(ns2,nm);
+    if(type==="service")return getNsArr(K.services,ns2).find(function(x){return x.name===nm});
+    if(type==="configmap")return getNsArr(K.configmaps,ns2).find(function(x){return x.name===nm});
+    if(type==="secret")return getNsArr(K.secrets,ns2).find(function(x){return x.name===nm});
+    if(type==="pvc")return getNsArr(K.pvc,ns2).find(function(x){return x.name===nm});
+    if(type==="ingress")return getNsArr(K.ingresses,ns2).find(function(x){return x.name===nm});
+    if(type==="statefulset")return getNsArr(K.statefulsets,ns2).find(function(x){return x.name===nm});
+    if(type==="daemonset")return getNsArr(K.daemonsets,ns2).find(function(x){return x.name===nm});
+    if(type==="job")return getNsArr(K.jobs,ns2).find(function(x){return x.name===nm});
+    if(type==="cronjob")return getNsArr(K.cronjobs,ns2).find(function(x){return x.name===nm});
+    if(type==="pv")return K.pv.find(function(x){return x.name===nm});
+    if(type==="node")return K.nodes.find(function(x){return x.name===nm});
+    return null;
+  }
+  if(sub==="get"){
+    if(!res){ctx.err.push("error: the server doesn't have a resource type \""+(rest[0]||"")+"\"");ctx.err.push("提示: 输入 kubectl api-resources 查看资源列表");return 1}
+    if(name){
+      var obj=findObjIn(res,ns,name);
+      if(!obj){ctx.err.push("Error from server (NotFound): "+RES_TYPES[res][0]+" \""+name+"\" not found");return 1}
+      if(outFmt==="yaml"){
+        if(res==="pod")ctx.out.push(podYaml(obj));
+        else if(res==="deployment")ctx.out.push(depYaml(obj));
+        else if(res==="service")ctx.out.push(svcYaml(obj));
+        else ctx.out.push(yamlOf(obj));
+        return 0}
+      if(outFmt==="json"){ctx.out.push(JSON.stringify(obj,null,2));return 0}
+      if(res==="pod"){ctx.out.push("NAME                                      READY   STATUS    RESTARTS   AGE");ctx.out.push(padStr(obj.name,42)+"   "+obj.ready+"   "+padStr(obj.status,9)+"  "+obj.restarts+"        "+ageCol(obj.created).padStart(5));return 0}
+      if(res==="deployment"){ctx.out.push("NAME              READY   UP-TO-DATE   AVAILABLE   AGE");ctx.out.push(padStr(obj.name,16)+"   "+obj.ready+"/"+obj.replicas+"     "+obj.updated+"           "+obj.available+"        "+ageCol(obj.created).padStart(5));return 0}
+      if(res==="service"){ctx.out.push("NAME            TYPE        CLUSTER-IP    EXTERNAL-IP   PORT(S)        AGE");ctx.out.push(padStr(obj.name,14)+"  "+padStr(obj.type,10)+"  "+obj.clusterIP+"  "+padStr(obj.externalIP,12)+" "+padStr(obj.ports,13)+" "+ageCol(obj.created).padStart(5));return 0}
+      ctx.out.push(obj.name);
+      return 0}
+    kGetTable(ctx,res,ns,allNs,outFmt);
+    if(watch)ctx.out.push("（watch 模式为静态快照模拟，输入其他命令可继续）");
+    return 0}
+  if(sub==="describe"){
+    if(!res){ctx.err.push("describe 需要资源类型");return 1}
+    if(name){
+      var obj=findObjIn(res,ns,name);
+      if(!obj){ctx.err.push("Error from server (NotFound): "+RES_TYPES[res][0]+" \""+name+"\" not found");return 1}
+      if(res==="pod"){describePod(ctx,obj);return 0}
+      if(res==="deployment"){
+        ctx.out.push("Name:                   "+obj.name);
+        ctx.out.push("Namespace:              "+obj.ns);
+        ctx.out.push("CreationTimestamp:      "+new Date(obj.created).toISOString());
+        ctx.out.push("Labels:                 "+obj.selector);
+        ctx.out.push("Selector:               "+obj.selector);
+        ctx.out.push("Replicas:               "+obj.replicas+" desired | "+obj.updated+" updated | "+obj.available+" available | "+obj.ready+" ready");
+        ctx.out.push("StrategyType:           RollingUpdate");
+        ctx.out.push("MinReadySeconds:        0");
+        ctx.out.push("RollingUpdateStrategy:  25% max unavailable, 25% max surge");
+        ctx.out.push("Pod Template:");
+        ctx.out.push("  Labels:       "+obj.selector);
+        ctx.out.push("  Containers:");
+        ctx.out.push("   "+obj.name+":");
+        ctx.out.push("    Image:        "+obj.image);
+        ctx.out.push("    Port:         <none>");
+        ctx.out.push("    Host Port:    <none>");
+        ctx.out.push("    Environment:  <none>");
+        ctx.out.push("  Volumes:       <none>");
+        ctx.out.push("Conditions:");
+        ctx.out.push("  Type           Status  Reason");
+        ctx.out.push("  ----           ------  ------");
+        ctx.out.push("  Available      True    MinimumReplicasAvailable");
+        ctx.out.push("  Progressing    True    NewReplicaSetAvailable");
+        ctx.out.push("OldReplicaSets:  <none>");
+        ctx.out.push("NewReplicaSet:   "+obj.name+"-"+rndHex(10)+" ("+obj.replicas+"/"+obj.replicas+" replicas created)");
+        ctx.out.push("Events:          <none>");
+        return 0}
+      if(res==="node"){
+        ctx.out.push("Name:               "+obj.name);
+        ctx.out.push("Roles:              "+obj.roles);
+        ctx.out.push("Labels:             kubernetes.io/hostname="+obj.name);
+        ctx.out.push("Annotations:        <none>");
+        ctx.out.push("CreationTimestamp:  "+new Date(obj.created).toISOString());
+        ctx.out.push("Taints:             <none>");
+        ctx.out.push("Unschedulable:      false");
+        ctx.out.push("Conditions:");
+        ctx.out.push("  Type             Status  LastHeartbeatTime                 LastTransitionTime                Reason                       Message");
+        ctx.out.push("  ----             ------  -----------------                 ------------------                ------                       -------");
+        ctx.out.push("  MemoryPressure   False   "+new Date().toISOString()+"   "+new Date(Date.now()-60000).toISOString()+"   KubeletHasSufficientMemory   kubelet has sufficient memory available");
+        ctx.out.push("  DiskPressure     False   "+new Date().toISOString()+"   "+new Date(Date.now()-60000).toISOString()+"   KubeletHasNoDiskPressure     kubelet has no disk pressure");
+        ctx.out.push("  PIDPressure      False   "+new Date().toISOString()+"   "+new Date(Date.now()-60000).toISOString()+"   KubeletHasSufficientPID      kubelet has sufficient PID available");
+        ctx.out.push("  Ready            True    "+new Date().toISOString()+"   "+new Date(Date.now()-60000).toISOString()+"   KubeletReady                 kubelet is posting ready status");
+        ctx.out.push("Addresses:");
+        ctx.out.push("  InternalIP:  "+obj.ip);
+        ctx.out.push("  Hostname:    "+obj.name);
+        ctx.out.push("Capacity:");
+        ctx.out.push("  cpu:                8");
+        ctx.out.push("  ephemeral-storage:  104857600Ki");
+        ctx.out.push("  memory:             8023456Ki");
+        ctx.out.push("  pods:               110");
+        ctx.out.push("Allocatable:");
+        ctx.out.push("  cpu:                7920m");
+        ctx.out.push("  memory:             7893216Ki");
+        ctx.out.push("  pods:               110");
+        ctx.out.push("System Info:");
+        ctx.out.push("  Machine ID:                "+rndHex(32));
+        ctx.out.push("  System UUID:               "+rndHex(36));
+        ctx.out.push("  OS Image:                  "+obj.os);
+        ctx.out.push("  Operating System:          linux");
+        ctx.out.push("  Architecture:              amd64");
+        ctx.out.push("  Kernel Version:            6.8.0-1010-cloud-amd64");
+        ctx.out.push("  Container Runtime Version:  containerd://1.7.18");
+        ctx.out.push("  Kubelet Version:           "+obj.version);
+        ctx.out.push("  Kube-Proxy Version:        "+obj.version);
+        ctx.out.push("Non-terminated Pods:         "+(K.pods[obj.name]||[]).length);
+        return 0}
+      if(res==="service"){
+        ctx.out.push("Name:              "+obj.name);
+        ctx.out.push("Namespace:         "+obj.ns);
+        ctx.out.push("Labels:            <none>");
+        ctx.out.push("Annotations:       <none>");
+        ctx.out.push("Selector:          "+obj.selector);
+        ctx.out.push("Type:              "+obj.type);
+        ctx.out.push("IP Family Policy:  SingleStack");
+        ctx.out.push("IP Families:       IPv4");
+        ctx.out.push("IP:                "+obj.clusterIP);
+        ctx.out.push("IPs:               "+obj.clusterIP);
+        ctx.out.push("Port:              <unset>  "+obj.ports.split("/")[0]+"/TCP");
+        ctx.out.push("TargetPort:        "+obj.ports.split("/")[0]+"/TCP");
+        ctx.out.push("Endpoints:         "+(obj.selector==="app=nginx"?"10.244.1.3:80,10.244.2.3:80,10.244.3.3:80":obj.selector==="app=redis"?"10.244.1.7:6379":"<none>"));
+        ctx.out.push("Session Affinity:  None");
+        ctx.out.push("Events:            <none>");
+        return 0}
+      if(res==="configmap"||res==="secret"){
+        var data=(res==="configmap")?obj.data:obj.data;
+        ctx.out.push("Name:         "+obj.name);
+        ctx.out.push("Namespace:    "+obj.ns);
+        ctx.out.push("Labels:       <none>");
+        ctx.out.push("Annotations:  <none>");
+        ctx.out.push("");
+        ctx.out.push("Data");
+        ctx.out.push("====");
+        Object.keys(data||{}).forEach(function(k){ctx.out.push(k+":\n----\n"+data[k])});
+        ctx.out.push("");
+        ctx.out.push("Events:  <none>");
+        return 0}
+      ctx.out.push(JSON.stringify(obj,null,2));
+      return 0}
+    ctx.err.push("describe 需要指定资源名称，例如: kubectl describe pod <名称>");
+    return 1}
+  if(sub==="apply"){
+    var file=null;
+    for(var i=0;i<rest.length;i++){
+      if(rest[i]==="-f")file=rest[++i];
+      else if(rest[i].indexOf("-f")===0&&rest[i].length>2)file=rest[i].slice(2);
+      else if(rest[i][0]==="-")continue;
+    }
+    if(!file){ctx.err.push("error: required flag(s) \"filename\" not set");return 1}
+    var content=null;
+    if(file==="-")content=ctx.stdin;
+    else content=readFile(FS,cwd,file);
+    if(content===null){ctx.err.push("error: unable to read file \""+file+"\": no such file or directory");return 1}
+    var obj;
+    try{obj=parseYaml(content)}catch(e){ctx.err.push("error: failed to parse YAML: "+e.message);return 1}
+    var kind=obj.kind||"";
+    var meta=obj.metadata||{};
+    var n2=meta.namespace||ns;
+    var nm=meta.name;
+    if(!nm||!kind){ctx.err.push("error: YAML 缺少 kind 或 metadata.name");return 1}
+    if(kind==="Deployment"){
+      var img=(obj.spec&&obj.spec.template&&obj.spec.template.spec&&obj.spec.template.spec.containers&&obj.spec.template.spec.containers[0]&&obj.spec.template.spec.containers[0].image)||"nginx:1.24";
+      var reps=(obj.spec&&obj.spec.replicas)||1;
+      var sel="app="+nm;
+      var dep=findDep(n2,nm);
+      if(dep){dep.image=img;dep.replicas=reps;dep.selector=sel;dep.updated=reps}
+      else{dep={name:nm,ns:n2,image:img,replicas:reps,ready:0,updated:reps,available:0,created:Date.now(),selector:sel};getNsArr(K.deployments,n2).push(dep)}
+      syncPodsForDeploy(dep);
+      ctx.out.push("deployment.apps/"+nm+" "+(dep?"configured":"created"));
+      saveK8s();return 0}
+    if(kind==="Service"){
+      var ports=(obj.spec&&obj.spec.ports&&obj.spec.ports[0])||{};
+      var portNum=ports.port||80;
+      var type=obj.spec&&obj.spec.type||"ClusterIP";
+      var sel=obj.spec&&obj.spec.selector?Object.keys(obj.spec.selector).map(function(k){return k+"="+obj.spec.selector[k]}).join(","):"app="+nm;
+      var s=getNsArr(K.services,n2).find(function(x){return x.name===nm});
+      if(s){s.ports=portNum+"/"+(ports.protocol||"TCP");s.type=type;s.selector=sel}
+      else{getNsArr(K.services,n2).push({name:nm,ns:n2,type:type,clusterIP:"10.96."+(Math.floor(Math.random()*250)+1)+"."+(Math.floor(Math.random()*250)+1),externalIP:"<none>",ports:portNum+"/"+(ports.protocol||"TCP"),selector:sel,created:Date.now()})}
+      ctx.out.push("service/"+nm+" "+(s?"configured":"created"));
+      saveK8s();return 0}
+    if(kind==="ConfigMap"){
+      var data=obj.data||{};
+      var cm=getNsArr(K.configmaps,n2).find(function(x){return x.name===nm});
+      if(cm)cm.data=data;
+      else getNsArr(K.configmaps,n2).push({name:nm,ns:n2,data:data,created:Date.now()});
+      ctx.out.push("configmap/"+nm+" "+(cm?"configured":"created"));
+      saveK8s();return 0}
+    if(kind==="Secret"){
+      var data=obj.data||{};
+      var se=getNsArr(K.secrets,n2).find(function(x){return x.name===nm});
+      if(se)se.data=data;
+      else getNsArr(K.secrets,n2).push({name:nm,ns:n2,type:"Opaque",data:data,created:Date.now()});
+      ctx.out.push("secret/"+nm+" "+(se?"configured":"created"));
+      saveK8s();return 0}
+    if(kind==="Namespace"){
+      if(K.namespaces.indexOf(nm)<0){K.namespaces.push(nm);K.pods[nm]=[];K.deployments[nm]=[];K.services[nm]=[];K.configmaps[nm]=[];K.secrets[nm]=[];K.pvc[nm]=[];K.ingresses[nm]=[];K.statefulsets[nm]=[];K.daemonsets[nm]=[];K.jobs[nm]=[];K.cronjobs[nm]=[]}
+      ctx.out.push("namespace/"+nm+" created");
+      saveK8s();return 0}
+    if(kind==="PersistentVolume"){
+      var cap=(obj.spec&&obj.spec.capacity&&obj.spec.capacity.storage)||"1Gi";
+      if(!K.pv.find(function(x){return x.name===nm}))K.pv.push({name:nm,capacity:cap,access:"RWO",reclaim:"Retain",status:"Available",claim:"",sc:"standard",created:Date.now()});
+      ctx.out.push("persistentvolume/"+nm+" created");
+      saveK8s();return 0}
+    if(kind==="PersistentVolumeClaim"){
+      var cap=(obj.spec&&obj.spec.resources&&obj.spec.resources.requests&&obj.spec.resources.requests.storage)||"1Gi";
+      var pvc=getNsArr(K.pvc,n2).find(function(x){return x.name===nm});
+      if(!pvc)getNsArr(K.pvc,n2).push({name:nm,ns:n2,status:"Bound",volume:"pv-"+nm,capacity:cap,access:"RWO",sc:"standard",created:Date.now()});
+      ctx.out.push("persistentvolumeclaim/"+nm+" created");
+      saveK8s();return 0}
+    if(kind==="Ingress"){
+      var hosts=(obj.spec&&obj.spec.rules&&obj.spec.rules[0]&&obj.spec.rules[0].host)||"example.com";
+      if(!getNsArr(K.ingresses,n2).find(function(x){return x.name===nm}))getNsArr(K.ingresses,n2).push({name:nm,ns:n2,class:"nginx",hosts:hosts,address:"10.0.0.11",ports:80,created:Date.now()});
+      ctx.out.push("ingress.networking.k8s.io/"+nm+" created");
+      saveK8s();return 0}
+    ctx.err.push("error: 模拟器暂不支持 kind="+kind+"，支持: Deployment / Service / ConfigMap / Secret / Namespace / PersistentVolume / PersistentVolumeClaim / Ingress");
+    return 1}
+  if(sub==="delete"){
+    if(!res||!name){ctx.err.push("用法: kubectl delete <资源类型> <名称> [-n 命名空间]");return 1}
+    var found=findObjIn(res,ns,name);
+    if(!found){
+      var allns=false;
+      for(var i=0;i<rest.length;i++)if(rest[i]==="--all")allns=true;
+      if(allns&&res==="pod"&&getNsArr(K.pods,ns).length){getNsArr(K.pods,ns).forEach(function(p){ctx.out.push("pod \""+p.name+"\" deleted")});K.pods[ns]=[];saveK8s();return 0}
+      ctx.err.push("Error from server (NotFound): "+RES_TYPES[res][0]+" \""+name+"\" not found");return 1}
+    if(res==="pod"){var arr=getNsArr(K.pods,ns);var idx=arr.indexOf(found);if(idx>=0)arr.splice(idx,1)}
+    else if(res==="deployment"){var arr=getNsArr(K.deployments,ns);var idx=arr.indexOf(found);if(idx>=0){arr.splice(idx,1);var pods=getNsArr(K.pods,ns);pods=pods.filter(function(p){return p.owner!==name});K.pods[ns]=pods}}
+    else if(res==="service"){var arr=getNsArr(K.services,ns);var idx=arr.indexOf(found);if(idx>=0)arr.splice(idx,1)}
+    else if(res==="configmap"){var arr=getNsArr(K.configmaps,ns);var idx=arr.indexOf(found);if(idx>=0)arr.splice(idx,1)}
+    else if(res==="secret"){var arr=getNsArr(K.secrets,ns);var idx=arr.indexOf(found);if(idx>=0)arr.splice(idx,1)}
+    else if(res==="pv"){var idx=K.pv.indexOf(found);if(idx>=0)K.pv.splice(idx,1)}
+    else if(res==="pvc"){var arr=getNsArr(K.pvc,ns);var idx=arr.indexOf(found);if(idx>=0)arr.splice(idx,1)}
+    else if(res==="namespace"){var idx=K.namespaces.indexOf(name);if(idx>=0)K.namespaces.splice(idx,1)}
+    else if(res==="node"){ctx.err.push("error: nodes \"node-01\" not found（模拟器不允许删除集群节点）");return 1}
+    ctx.out.push(RES_TYPES[res][0]+" \""+name+"\" deleted");
+    saveK8s();return 0}
+  if(sub==="logs"){
+    var podName=null,follow=false,prev=false,cont=null;
+    for(var i=0;i<rest.length;i++){if(rest[i]==="-f"||rest[i]==="--follow")follow=true;else if(rest[i]==="--previous"||rest[i]==="-p")prev=true;else if(rest[i]==="-c"||rest[i]=="--container")cont=rest[++i];else if(rest[i][0]==="-")continue;else podName=rest[i]}
+    if(!podName){ctx.err.push("error: a container name must be specified for pod");return 1}
+    var pod=getNsArr(K.pods,ns).find(function(x){return x.name===podName});
+    if(!pod){ctx.err.push("Error from server (NotFound): pods \""+podName+"\" not found");return 1}
+    if(pod.image.indexOf("nginx")===0){
+      ctx.out.push("/docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration");
+      ctx.out.push("[notice] 1#1: nginx/1.24.0");
+      ctx.out.push("10.244."+pod.ip.split(".")[2]+"."+pod.ip.split(".")[3]+" - - ["+nowStr()+"] \"GET / HTTP/1.1\" 200 612 \"-\" \"curl/8.5.0\"");
+      ctx.out.push("10.244."+pod.ip.split(".")[2]+"."+pod.ip.split(".")[3]+" - - ["+nowStr()+"] \"GET /index.html HTTP/1.1\" 200 612 \"-\" \"Mozilla/5.0\"");
+    }else if(pod.image.indexOf("redis")===0){
+      ctx.out.push("1:M "+new Date().toISOString()+" * Ready to accept connections tcp");
+      ctx.out.push("1:M "+new Date().toISOString()+" * 10 changes in 300 seconds. Saving...");
+      ctx.out.push("1:M "+new Date().toISOString()+" * Background saving started by pid 12");
+    }else{
+      ctx.out.push("（Pod "+podName+" 的日志模拟）");
+      ctx.out.push(nowStr()+" INFO  main - application started");
+      ctx.out.push(nowStr()+" INFO  main - listening on :8080");
+    }
+    if(follow)ctx.out.push("（日志跟随模拟，输入其他命令可继续）");
+    return 0}
+  if(sub==="exec"){
+    var podName=null,cmd=[],interactive=false,container=null;
+    for(var i=0;i<rest.length;i++){
+      var t=rest[i];
+      if(t==="-it")interactive=true;
+      else if(t==="-i"||t==="-t"){}
+      else if(t==="-c"||t==="--container")container=rest[++i];
+      else if(t==="--"){cmd=rest.slice(i+1);break}
+      else if(t[0]==="-")continue;
+      else podName=t;
+    }
+    if(!podName){ctx.err.push("error: a container name must be specified for pod");return 1}
+    var pod=getNsArr(K.pods,ns).find(function(x){return x.name===podName});
+    if(!pod){ctx.err.push("Error from server (NotFound): pods \""+podName+"\" not found");return 1}
+    if(!cmd.length)cmd=["/bin/sh"];
+    if(cmd[0]==="/bin/sh"||cmd[0]==="sh"||cmd[0]==="bash"||cmd[0]==="ls"){
+      ctx.out.push("（已进入 Pod "+podName+" 容器内 shell，模拟环境）");
+      ctx.out.push("/ # ls");
+      ctx.out.push("bin   dev   etc   home  lib   media mnt   opt   proc  root  run   sbin  srv   sys   tmp   usr   var");
+      return 0}
+    if(cmd[0]==="env"){ctx.out.push("KUBERNETES_SERVICE_HOST=10.96.0.1\nKUBERNETES_SERVICE_PORT=443\nHOSTNAME="+podName+"\nNGINX_VERSION=1.24.0");return 0}
+    if(cmd[0]==="hostname"){ctx.out.push(podName);return 0}
+    if(cmd[0]==="cat"&&cmd[1]){ctx.out.push("（"+cmd[1]+" 的内容模拟）");return 0}
+    ctx.out.push("（已执行: "+cmd.join(" ")+"）");
+    return 0}
+  if(sub==="scale"){
+    var type=normRes(rest[0]),depName=rest[1],replicas=null,curNs=ns;
+    for(var i=0;i<rest.length;i++){
+      if(rest[i]==="--replicas"||rest[i].indexOf("--replicas=")===0)replicas=parseInt(rest[i].indexOf("=")>=0?rest[i].split("=")[1]:rest[++i]);
+      else if(rest[i]==="-n"||rest[i]==="--namespace")curNs=rest[++i];
+      else if(rest[i].indexOf("-n")===0&&rest[i].length>2)curNs=rest[i].slice(2);
+    }
+    if(!depName||replicas===null){ctx.err.push("error: scale 需要 --replicas 参数，例如: kubectl scale deployment nginx --replicas=5");return 1}
+    var dep=findDep(curNs,depName);
+    if(!dep){ctx.err.push("Error from server (NotFound): deployments.apps \""+depName+"\" not found");return 1}
+    dep.replicas=replicas;
+    syncPodsForDeploy(dep);
+    ctx.out.push("deployment.apps/"+depName+" scaled to "+replicas);
+    return 0}
+  if(sub==="rollout"){
+    var action=rest[0],target=rest[1];
+    if(!target){ctx.err.push("rollout 需要目标，例如: kubectl rollout status deployment/nginx");return 1}
+    var parts=target.split("/");
+    var depName=parts.length>1?parts[1]:target;
+    var dep=findDep(ns,depName);
+    if(!dep){ctx.err.push("error: deployments.apps \""+depName+"\" not found");return 1}
+    if(action==="status"){ctx.out.push("deployment \""+depName+"\" successfully rolled out");return 0}
+    if(action==="restart"){ctx.out.push("deployment.apps/"+depName+" restarted");dep.restartedAt=Date.now();saveK8s();return 0}
+    if(action==="undo"){ctx.out.push("deployment.apps/"+depName+" rolled back");return 0}
+    if(action==="history"){ctx.out.push("REVISION  CHANGE-CAUSE");ctx.out.push("1         <none>");ctx.out.push("2         kubectl set image");return 0}
+    ctx.err.push("rollout: 支持 status / restart / undo / history");
+    return 1}
+  if(sub==="port-forward"){
+    var target=rest[0],ports=rest[1]||"8080:80";
+    if(!target){ctx.err.push("error: port-forward 需要目标");return 1}
+    ctx.out.push("Forwarding from 127.0.0.1:"+ports.split(":")[0]+" -> "+ports.split(":")[1]);
+    ctx.out.push("Handling connection for "+ports.split(":")[0]);
+    ctx.out.push("（模拟端口转发，输入其他命令可结束）");
+    return 0}
+  if(sub==="version"){
+    ctx.out.push("Client Version: v1.30.2");
+    ctx.out.push("Kustomize Version: v5.0.4-0.20230601165947");
+    ctx.out.push("Server Version: v1.30.2");
+    return 0}
+  if(sub==="cluster-info"){
+    ctx.out.push("Kubernetes control plane is running at https://"+K.nodes[0].ip+":6443");
+    ctx.out.push("CoreDNS is running at https://"+K.nodes[0].ip+":6443/api/v1/namespaces/kube-system/services/kube-dns:dns/proxy");
+    ctx.out.push("");
+    ctx.out.push("To further debug and diagnose cluster problems, use 'kubectl cluster-info dump'.");
+    return 0}
+  if(sub==="api-resources"){
+    ctx.out.push("NAME                              SHORTNAMES   APIVERSION                             NAMESPACED   KIND");
+    [["pods","po","v1",true,"Pod"],["deployments","deploy","apps/v1",true,"Deployment"],["services","svc","v1",true,"Service"],["nodes","no","v1",false,"Node"],["namespaces","ns","v1",false,"Namespace"],["configmaps","cm","v1",true,"ConfigMap"],["secrets","v1",true,"Secret"],["persistentvolumes","pv","v1",false,"PersistentVolume"],["persistentvolumeclaims","pvc","v1",true,"PersistentVolumeClaim"],["ingresses","ing","networking.k8s.io/v1",true,"Ingress"],["statefulsets","sts","apps/v1",true,"StatefulSet"],["daemonsets","ds","apps/v1",true,"DaemonSet"],["jobs","batch/v1",true,"Job"],["cronjobs","cj","batch/v1",true,"CronJob"],["events","ev","v1",true,"Event"],["replicasets","rs","apps/v1",true,"ReplicaSet"],["endpoints","ep","v1",true,"Endpoints"]].forEach(function(r){ctx.out.push(padStr(r[0],33)+"  "+padStr(r[1]||"",10)+"  "+padStr(r[2],35)+"  "+(r[3]?"true":"false")+"   "+r[4])});
+    return 0}
+  if(sub==="config"){
+    var act=rest[0];
+    if(act==="current-context"){ctx.out.push(K.currentContext);return 0}
+    if(act==="view"){ctx.out.push("apiVersion: v1\nclusters:\n- cluster:\n    certificate-authority-data: DATA+OMITTED\n    server: https://"+K.nodes[0].ip+":6443\n  name: kubernetes\ncontexts:\n- context:\n    cluster: kubernetes\n    user: kubernetes-admin\n  name: "+K.currentContext+"\ncurrent-context: "+K.currentContext+"\nkind: Config\npreferences: {}\nusers:\n- name: kubernetes-admin\n  user:\n    client-certificate-data: DATA+OMITTED\n    client-key-data: DATA+OMITTED");return 0}
+    if(act==="get-contexts"||act==="get"){ctx.out.push("CURRENT   NAME                          CLUSTER      AUTHINFO           NAMESPACE");K.contexts.forEach(function(c){ctx.out.push((c.name===K.currentContext?"*":" ")+"         "+padStr(c.name,26)+"  "+padStr(c.cluster,11)+"  "+padStr(c.user,16)+"  "+c.ns)});return 0}
+    if(act==="use-context"){var cn=rest[1];var c=K.contexts.find(function(x){return x.name===cn});if(!c){ctx.err.push("error: no context exists with the name: \""+cn+"\"");return 1}K.currentContext=cn;ctx.out.push("Switched to context \""+cn+"\".");saveK8s();return 0}
+    if(act==="set-context"){ctx.out.push("Context \""+rest[1]+"\" modified.");return 0}
+    ctx.err.push("kubectl config: 支持 current-context / view / get-contexts / use-context / set-context");
+    return 1}
+  if(sub==="explain"){
+    var t=rest[0]||"pod";
+    var res2=normRes(t);
+    if(!res2){ctx.err.push("error: resource "+t+" not found");return 1}
+    if(res2==="deployment"){
+      ctx.out.push("KIND:     Deployment");
+      ctx.out.push("VERSION:  apps/v1");
+      ctx.out.push("");
+      ctx.out.push("DESCRIPTION:");
+      ctx.out.push("     Deployment enables declarative updates for Pods and ReplicaSets.");
+      ctx.out.push("");
+      ctx.out.push("FIELDS:");
+      ctx.out.push("   apiVersion   <string>");
+      ctx.out.push("   kind <string>");
+      ctx.out.push("   metadata     <Object>");
+      ctx.out.push("   spec <Object>");
+      ctx.out.push("     replicas   <integer>  期望副本数");
+      ctx.out.push("     selector   <Object>   选择器");
+      ctx.out.push("     template   <Object>   Pod 模板");
+      ctx.out.push("     strategy   <Object>   更新策略");
+      ctx.out.push("   status       <Object>");
+      return 0}
+    if(res2==="pod"){
+      ctx.out.push("KIND:     Pod\nVERSION:  v1\n\nDESCRIPTION:\n     Pod is a collection of containers that can run on a host.\n\nFIELDS:\n   apiVersion   <string>\n   kind <string>\n   metadata     <Object>\n   spec <Object>\n     containers <[]Object>  容器列表\n     nodeName   <string>\n     restartPolicy <string>\n   status       <Object>");
+      return 0}
+    ctx.out.push("KIND:     "+t+"\nVERSION:  v1\n\nFIELDS:\n   apiVersion   <string>\n   kind <string>\n   metadata     <Object>\n   spec <Object>");
+    return 0}
+  if(sub==="top"){
+    var t=rest[0];
+    if(t==="node"){ctx.out.push("NAME      CPU(cores)   CPU%   MEMORY(bytes)   MEMORY%");K.nodes.forEach(function(n){var c=Math.floor(Math.random()*1500+300),m=Math.floor(Math.random()*3e6+2e6);ctx.out.push(padStr(n.name,9)+"  "+c+"m         "+(c/8000*100).toFixed(2)+"%   "+m+"Mi         "+(m/8192).toFixed(1)+"%")});return 0}
+    if(t==="pod"||!t){ctx.out.push("NAME                                        CPU(cores)   MEMORY(bytes)");getNsArr(K.pods,ns).forEach(function(p){ctx.out.push(padStr(p.name,42)+"  "+(Math.floor(Math.random()*80+5))+"m          "+(Math.floor(Math.random()*200+30))+"Mi")});return 0}
+    ctx.err.push("kubectl top: 支持 node / pod");
+    return 1}
+  if(sub==="get"&&!res){}
+  if(sub==="label"){
+    var t=rest[0],nm=rest[1],kv=rest[2];
+    if(!nm){ctx.err.push("label 需要对象");return 1}
+    ctx.out.push((t||"pod")+"/"+nm+" labeled");
+    return 0}
+  if(sub==="annotate"){ctx.out.push(rest[1]+" annotated");return 0}
+  if(sub==="edit"){ctx.out.push("（kubectl edit 为交互式编辑器，模拟器不支持；可练习 apply -f 声明式管理）");return 1}
+  if(sub==="attach"){ctx.out.push("（kubectl attach 模拟：已附加到容器）");return 0}
+  if(sub==="cp"){ctx.out.push("（kubectl cp 模拟：已复制文件）");return 0}
+  if(sub==="cordon"||sub==="uncordon"){var nn=rest[0];ctx.out.push("node/"+nn+" "+(sub==="cordon"?"cordoned":"uncordoned"));return 0}
+  if(sub==="drain"){ctx.out.push("node/"+rest[0]+" drained");return 0}
+  if(sub==="taint"){ctx.out.push("node/"+rest[1]+" tainted");return 0}
+  if(sub==="auth"){ctx.out.push("yes");return 0}
+  if(sub==="diff"){ctx.out.push("（kubectl diff 模拟：无差异）");return 0}
+  ctx.err.push("kubectl: '"+sub+"' 未在模拟器实现，可用: get / describe / apply / delete / logs / exec / scale / rollout / port-forward / version / cluster-info / api-resources / config / explain / top / label / cordon");
+  return 1;
+},"Kubernetes 集群管理");
+/* ================= YAML 解析 ================= */
+function parseYaml(text){
+  var lines=text.split("\n");
+  var root={};
+  var indentStack=[-1],nodeStack=[root],keyStack=[null],listStack=[null];
+  function scalar(v){
+    v=v.trim();
+    if((v[0]==="\""&&v.slice(-1)==="\"")||(v[0]==="'"&&v.slice(-1)==="'"))return v.slice(1,-1);
+    if(v==="true")return true;
+    if(v==="false")return false;
+    if(v==="null"||v==="~")return null;
+    if(/^-?\d+$/.test(v))return parseInt(v);
+    if(/^-?\d+\.\d+$/.test(v))return parseFloat(v);
+    return v;
+  }
+  for(var i=0;i<lines.length;i++){
+    var raw=lines[i];
+    if(!raw.trim()||raw.trim()[0]==="#")continue;
+    var t=raw.replace(/^\s+/,"");
+    var ind=raw.length-t.length;
+    while(indentStack.length>1&&ind<=indentStack[indentStack.length-1]){
+      indentStack.pop();nodeStack.pop();keyStack.pop();listStack.pop();
+    }
+    var node=nodeStack[nodeStack.length-1];
+    var list=listStack[listStack.length-1];
+    if(t[0]==="-"){
+      var it=t.slice(1).trim();
+      if(!list){
+        list=[];
+        node[keyStack[keyStack.length-1]]=list;
+        listStack[listStack.length-1]=list;
+      }
+      var m=it.match(/^([\w.\/-]+):\s*(.*)$/);
+      if(m){
+        var item={};
+        list.push(item);
+        var k2=m[1],v2=m[2].trim();
+        if(v2===""){indentStack.push(ind+1);nodeStack.push(item);keyStack.push(k2);listStack.push(null)}
+        else item[k2]=scalar(v2);
+      }else if(it){list.push(scalar(it))}
+      continue;
+    }
+    var mm=t.match(/^([\w.\/-]+):\s*(.*)$/);
+    if(mm){
+      var k3=mm[1],v3=mm[2].trim();
+      if(v3===""){
+        var child={};
+        node[k3]=child;
+        indentStack.push(ind);nodeStack.push(child);keyStack.push(k3);listStack.push(null);
+      }else{
+        node[k3]=scalar(v3);
+      }
+    }
+  }
+  return root;
+}
+/* ================= 初始化 ================= */
+function padStr(s,n){s=String(s);while(s.length<n)s+=" ";return s}
+function init(){
+  loadState();
+  D=loadDocker();
+  K=loadK8s();
+  printBanner();
+  renderPrompt();
+  setInterval(function(){var e=document.getElementById("tbtime");if(e)e.textContent=nowStr()},1000);
+}
+/* ================= 输入处理 ================= */
+var busy=false,heredocActive=false,heredocEnd=null,heredocCmd=null,heredocBody=[],heredocStdin="";
+cmdEl.addEventListener("keydown",function(e){
+  if(e.key==="Enter"){
+    e.preventDefault();
+    if(busy)return;
+    var line=cmdEl.value;
+    if(heredocActive){
+      if(line.trim()===heredocEnd){
+        heredocActive=false;
+        addLine("> "+line,"");
+        renderPrompt();
+        cmdEl.value="";
+        heredocStdin=heredocBody.join("\n");
+        heredocBody=[];
+        runLine(heredocCmd);
+      }else{
+        heredocBody.push(line);
+        addLine("> "+line,"");
+        cmdEl.value="";
+      }
+      return;
+    }
+    if(!line.trim()){addLine(promptStr(),"");cmdEl.value="";return}
+    var hdm=line.match(/<<\s*['"]?(\w+)['"]?/);
+    if(hdm){
+      history.push(line);
+      if(history.length>500)history.shift();
+      histIdx=history.length;
+      addLine(promptStr()+line,"");
+      cmdEl.value="";
+      heredocActive=true;heredocEnd=hdm[1];heredocCmd=line.replace(/<<\s*['"]?(\w+)['"]?/,"").replace(/\s+$/,"");heredocBody=[];
+      promptEl.textContent="> ";
+      return;
+    }
+    history.push(line);
+    if(history.length>500)history.shift();
+    histIdx=history.length;
+    addLine(promptStr()+line,"");
+    cmdEl.value="";
+    runLine(line);
+  }else if(e.key==="ArrowUp"){
+    e.preventDefault();
+    if(histIdx>0){histIdx--;cmdEl.value=history[histIdx]}
+  }else if(e.key==="ArrowDown"){
+    e.preventDefault();
+    if(histIdx<history.length){histIdx++;cmdEl.value=histIdx<history.length?history[histIdx]:""}
+  }else if(e.key==="Tab"){
+    e.preventDefault();
+    doTab();
+  }else if(e.key==="c"&&e.ctrlKey){
+    e.preventDefault();
+    cmdEl.value="";
+    if(heredocActive){heredocActive=false;heredocBody=[];renderPrompt();addLine("^C","d");return}
+    addLine("^C","d");
+    renderPrompt();
+  }
+});
+async function runLine(line){
+  busy=true;
+  var r=await execPipeline(line);
+  printOut(r.out);printErr(r.err);
+  saveFS();
+  busy=false;
+  renderPrompt();
+}
+function doTab(){
+  var v=cmdEl.value;
+  var m=v.match(/(^|\s)([^\s]*)$/);
+  if(!m)return;
+  var prefix=m[2];
+  var candidates=[];
+  if(!/[\s\/]/.test(v.slice(0,m[1].length+1))){candidates=Object.keys(CMDS).filter(function(c){return c.indexOf(prefix)===0})}
+  if(!candidates.length){
+    var cwd2=cwd;
+    var head="";
+    if(prefix.indexOf("/")>=0){head=prefix.slice(0,prefix.lastIndexOf("/")+1);var tail=prefix.slice(prefix.lastIndexOf("/")+1);cwd2=resolvePath(cwd,head)}
+    var ch=lsDir(FS,cwd,cwd2)||{};
+    candidates=Object.keys(ch).filter(function(n){return n.indexOf(prefix.slice(prefix.lastIndexOf("/")+1))===0}).map(function(n){return (prefix.indexOf("/")>=0?head:"")+n});
+  }
+  if(candidates.length===1){
+    var rest=v.slice(0,v.length-prefix.length)+candidates[0];
+    cmdEl.value=rest+(CMDS[candidates[0]]?" ":" ");
+  }else if(candidates.length>1){
+    addLine(promptStr()+v,"");
+    candidates.forEach(function(c){addLine(c,"d")});
+  }
+}
+document.addEventListener("click",function(){cmdEl.focus()});
+init();
+
+</script>
+</body>
+</html>
